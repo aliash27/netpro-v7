@@ -9,20 +9,41 @@ const MO = ['كانون الثاني','شباط','آذار','نيسان','أيا
 
 function calcDebt(sub, paidMonths = []) {
   if (!sub?.start_date) return []
-  const now = new Date()
-  // Start from subscription start_date, not last_paid_month
-  const startD = new Date(sub.start_date)
-  const months = []
-  let y = startD.getFullYear()
-  let m = startD.getMonth() + 1
+  const now     = new Date()
   const paidSet = new Set(paidMonths)
-  while (new Date(y, m - 1) <= now) {
-    const key = `${y}-${String(m).padStart(2,'0')}`
-    if (!paidSet.has(key)) {
-      months.push(key)
+  const months  = []
+
+  // If there are actual payment records, use them to determine what's unpaid
+  if (paidMonths.length > 0) {
+    // Start from start_date, skip all paid months
+    const startD = new Date(sub.start_date)
+    let y = startD.getFullYear(), m = startD.getMonth() + 1
+    while (new Date(y, m - 1) <= now) {
+      const key = `${y}-${String(m).padStart(2,'0')}`
+      if (!paidSet.has(key)) months.push(key)
+      m++; if (m > 12) { m = 1; y++ }
     }
-    m++
+    return months
+  }
+
+  // No payment records at all → use last_paid_month as baseline
+  if (sub.last_paid_month) {
+    const [ly, lm] = sub.last_paid_month.split('-').map(Number)
+    let y = ly, m = lm + 1
     if (m > 12) { m = 1; y++ }
+    while (new Date(y, m - 1) <= now) {
+      months.push(`${y}-${String(m).padStart(2,'0')}`)
+      m++; if (m > 12) { m = 1; y++ }
+    }
+    return months
+  }
+
+  // No payments and no last_paid_month → all months from start are debt
+  const startD = new Date(sub.start_date)
+  let y = startD.getFullYear(), m = startD.getMonth() + 1
+  while (new Date(y, m - 1) <= now) {
+    months.push(`${y}-${String(m).padStart(2,'0')}`)
+    m++; if (m > 12) { m = 1; y++ }
   }
   return months
 }
@@ -631,7 +652,8 @@ export default function SubscriberDetail() {
       }}>
         <button
           className="btn btn-primary"
-          style={{ flex:2, display: isViewer ? 'none' : 'block' }}
+          style={{ flex:2, display: isViewer ? 'none' : 'flex',
+            alignItems:'center', justifyContent:'center', gap:6 }}
           onClick={() => {
             setPayForm({
               month:   debt.length > 0 ? debt[0] : curMo,

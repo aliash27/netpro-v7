@@ -9,14 +9,36 @@ const MO = ['كانون الثاني','شباط','آذار','نيسان','أيا
 
 function calcDebt(sub, paidMonths = []) {
   if (!sub?.start_date) return []
-  const now = new Date()
-  const startD = new Date(sub.start_date)
+  const now     = new Date()
   const paidSet = new Set(paidMonths)
-  const months = []
+  const months  = []
+
+  if (paidMonths.length > 0) {
+    const startD = new Date(sub.start_date)
+    let y = startD.getFullYear(), m = startD.getMonth() + 1
+    while (new Date(y, m - 1) <= now) {
+      const key = `${y}-${String(m).padStart(2,'0')}`
+      if (!paidSet.has(key)) months.push(key)
+      m++; if (m > 12) { m = 1; y++ }
+    }
+    return months
+  }
+
+  if (sub.last_paid_month) {
+    const [ly, lm] = sub.last_paid_month.split('-').map(Number)
+    let y = ly, m = lm + 1
+    if (m > 12) { m = 1; y++ }
+    while (new Date(y, m - 1) <= now) {
+      months.push(`${y}-${String(m).padStart(2,'0')}`)
+      m++; if (m > 12) { m = 1; y++ }
+    }
+    return months
+  }
+
+  const startD = new Date(sub.start_date)
   let y = startD.getFullYear(), m = startD.getMonth() + 1
   while (new Date(y, m - 1) <= now) {
-    const key = `${y}-${String(m).padStart(2,'0')}`
-    if (!paidSet.has(key)) months.push(key)
+    months.push(`${y}-${String(m).padStart(2,'0')}`)
     m++; if (m > 12) { m = 1; y++ }
   }
   return months
