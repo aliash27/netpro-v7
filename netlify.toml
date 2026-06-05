@@ -1,15 +1,13 @@
 [build]
-  command = "npm run build"
-  publish = "dist"
+  command   = "npm install && npm run build"
+  publish   = "dist"
 
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Cache-Control = "public, max-age=0, must-revalidate"
-    X-Frame-Options = "DENY"
-    X-XSS-Protection = "1; mode=block"
+[build.environment]
+  NODE_VERSION = "20"
+  VITE_SUPABASE_URL = "https://fvtrwovquavoyakiczrv.supabase.co"
+  VITE_SUPABASE_KEY = "sb_publishable_lELYDMRcDddwfiruCyKxCg_uHAhdhBb"
 
 [[redirects]]
-  from = "/*"
-  to = "/index.html"
+  from   = "/*"
+  to     = "/index.html"
   status = 200
