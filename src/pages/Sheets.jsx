@@ -5,7 +5,8 @@ import { toast } from '../components/Toast'
 import { useOutletContext } from 'react-router-dom'
 
 // Google Apps Script code — supports both read and write
-const AS_CODE = `function doPost(e){
+const AS_CODE = `// NetPro Apps Script v2 — supports CORS + read + write
+function doPost(e){
   try{
     var d=JSON.parse(e.postData.contents);
     var ss=SpreadsheetApp.getActiveSpreadsheet();
@@ -14,22 +15,23 @@ const AS_CODE = `function doPost(e){
       sh.clearContents();
       if(d.rows&&d.rows.length)
         sh.getRange(1,1,d.rows.length,d.rows[0].length).setValues(d.rows);
-      return out({ok:true});
+      return out({ok:true,count:d.rows.length});
     }
     if(d.action==='read'){
       var data=sh.getDataRange().getValues();
       return out({ok:true,data:data});
     }
-    return out({ok:false,err:'unknown action'});
+    return out({ok:false,err:'unknown'});
   }catch(err){return out({ok:false,err:err.toString()});}
 }
 function doGet(e){
-  // Also support GET for reading
   try{
+    var action=e&&e.parameter&&e.parameter.action;
     var ss=SpreadsheetApp.getActiveSpreadsheet();
-    var sh=ss.getSheets()[0];
+    var shName=e&&e.parameter&&e.parameter.sheet;
+    var sh=shName?ss.getSheetByName(shName)||ss.getSheets()[0]:ss.getSheets()[0];
     var data=sh.getDataRange().getValues();
-    return out({ok:true,data:data});
+    return out({ok:true,data:data,rows:data.length});
   }catch(err){return out({ok:false,err:err.toString()});}
 }
 function out(o){
@@ -43,12 +45,14 @@ const MO = ['كانون الثاني','شباط','آذار','نيسان','أيا
 
 function calcDebt(sub, paidMonths = []) {
   if (!sub?.start_date) return []
-  const now     = new Date()
-  const paidSet = new Set(paidMonths)
-  const months  = []
+  const now = new Date()
+  const months = []
 
+  // If we have actual payment records from DB, use them precisely
   if (paidMonths.length > 0) {
-    const startD = new Date(sub.start_date)
+    // All months from start_date to now that are NOT in paidMonths = debt
+    const paidSet = new Set(paidMonths)
+    const startD  = new Date(sub.start_date)
     let y = startD.getFullYear(), m = startD.getMonth() + 1
     while (new Date(y, m - 1) <= now) {
       const key = `${y}-${String(m).padStart(2,'0')}`
@@ -58,8 +62,11 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No DB payment records — use last_paid_month as the paid-up-to marker
+  // Everything AFTER last_paid_month is debt
   if (sub.last_paid_month) {
     const [ly, lm] = sub.last_paid_month.split('-').map(Number)
+    // Start from month AFTER last_paid_month
     let y = ly, m = lm + 1
     if (m > 12) { m = 1; y++ }
     while (new Date(y, m - 1) <= now) {
@@ -69,6 +76,7 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No payment info at all — everything from start_date is debt
   const startD = new Date(sub.start_date)
   let y = startD.getFullYear(), m = startD.getMonth() + 1
   while (new Date(y, m - 1) <= now) {
@@ -178,21 +186,51 @@ export default function Sheets() {
       toast('الرجاء ربط Google Sheets أولاً', 'e'); return
     }
     setPulling(true)
-    toast('جاري جلب البيانات من الجدول...', 'i')
+    toast('جاري جلب البيانات...', 'i')
+
+    // Strategy: try no-cors first via script URL trick, then fallback
+    const url = config.web_app_url
+    
+    // Try using a JSONP-style approach with script injection
+    const tryFetch = () => new Promise((resolve, reject) => {
+      // Add callback param to make it work as JSONP
+      const cbName = '__gsCallback_' + Date.now()
+      const script  = document.createElement('script')
+      script.src    = url + '?callback=' + cbName
+      let done = false
+      window[cbName] = (data) => {
+        done = true
+        delete window[cbName]
+        document.head.removeChild(script)
+        resolve(data)
+      }
+      script.onerror = () => {
+        if (!done) { delete window[cbName]; reject(new Error('script error')) }
+      }
+      setTimeout(() => {
+        if (!done) { delete window[cbName]; reject(new Error('timeout')) }
+      }, 8000)
+      document.head.appendChild(script)
+    })
+
     try {
-      // Use GET request to fetch data
-      const url = config.web_app_url
-      const res = await fetch(url, { method: 'GET', mode: 'cors' })
-      if (!res.ok) throw new Error('HTTP ' + res.status)
-      const json = await res.json()
-      if (!json.ok || !json.data) throw new Error(json.err || 'no data')
-      const rows = json.data
-      if (rows.length <= 1) { toast('الجدول فارغ أو يحتوي على رأس فقط', 'w'); setPulling(false); return }
-      setPreviewData(rows)
-      toast(`تم جلب ${rows.length - 1} صف من الجدول ✅`, 's')
-    } catch(err) {
-      // CORS issue — provide manual import option
-      toast('تعذّر الجلب التلقائي — استخدم الاستيراد اليدوي أدناه', 'w')
+      // First try: direct fetch (works if script is deployed correctly)
+      const res = await fetch(url, { method:'GET', mode:'cors' })
+        .catch(() => null)
+      
+      if (res && res.ok) {
+        const json = await res.json()
+        if (json.ok && json.data && json.data.length > 1) {
+          setPreviewData(json.data)
+          toast(`تم جلب ${json.data.length-1} مشترك ✅`, 's')
+          setPulling(false); return
+        }
+      }
+
+      // Second try: no-cors mode won't give response — show CSV import
+      toast('استخدم استيراد CSV للحصول على البيانات', 'w')
+      setPreviewData('cors-error')
+    } catch {
       setPreviewData('cors-error')
     } finally { setPulling(false) }
   }

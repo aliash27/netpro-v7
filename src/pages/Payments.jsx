@@ -14,12 +14,14 @@ function moLabel(ym) {
 function fmt(n) { return Number(n).toLocaleString('ar-IQ') + ' د.ع' }
 function calcDebt(sub, paidMonths = []) {
   if (!sub?.start_date) return []
-  const now     = new Date()
-  const paidSet = new Set(paidMonths)
-  const months  = []
+  const now = new Date()
+  const months = []
 
+  // If we have actual payment records from DB, use them precisely
   if (paidMonths.length > 0) {
-    const startD = new Date(sub.start_date)
+    // All months from start_date to now that are NOT in paidMonths = debt
+    const paidSet = new Set(paidMonths)
+    const startD  = new Date(sub.start_date)
     let y = startD.getFullYear(), m = startD.getMonth() + 1
     while (new Date(y, m - 1) <= now) {
       const key = `${y}-${String(m).padStart(2,'0')}`
@@ -29,8 +31,11 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No DB payment records — use last_paid_month as the paid-up-to marker
+  // Everything AFTER last_paid_month is debt
   if (sub.last_paid_month) {
     const [ly, lm] = sub.last_paid_month.split('-').map(Number)
+    // Start from month AFTER last_paid_month
     let y = ly, m = lm + 1
     if (m > 12) { m = 1; y++ }
     while (new Date(y, m - 1) <= now) {
@@ -40,6 +45,7 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No payment info at all — everything from start_date is debt
   const startD = new Date(sub.start_date)
   let y = startD.getFullYear(), m = startD.getMonth() + 1
   while (new Date(y, m - 1) <= now) {

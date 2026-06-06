@@ -6,12 +6,14 @@ import { toast } from '../components/Toast'
 
 function calcDebt(sub, paidMonths = []) {
   if (!sub?.start_date) return []
-  const now     = new Date()
-  const paidSet = new Set(paidMonths)
-  const months  = []
+  const now = new Date()
+  const months = []
 
+  // If we have actual payment records from DB, use them precisely
   if (paidMonths.length > 0) {
-    const startD = new Date(sub.start_date)
+    // All months from start_date to now that are NOT in paidMonths = debt
+    const paidSet = new Set(paidMonths)
+    const startD  = new Date(sub.start_date)
     let y = startD.getFullYear(), m = startD.getMonth() + 1
     while (new Date(y, m - 1) <= now) {
       const key = `${y}-${String(m).padStart(2,'0')}`
@@ -21,8 +23,11 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No DB payment records — use last_paid_month as the paid-up-to marker
+  // Everything AFTER last_paid_month is debt
   if (sub.last_paid_month) {
     const [ly, lm] = sub.last_paid_month.split('-').map(Number)
+    // Start from month AFTER last_paid_month
     let y = ly, m = lm + 1
     if (m > 12) { m = 1; y++ }
     while (new Date(y, m - 1) <= now) {
@@ -32,6 +37,7 @@ function calcDebt(sub, paidMonths = []) {
     return months
   }
 
+  // No payment info at all — everything from start_date is debt
   const startD = new Date(sub.start_date)
   let y = startD.getFullYear(), m = startD.getMonth() + 1
   while (new Date(y, m - 1) <= now) {
@@ -59,6 +65,9 @@ export default function Subscribers() {
 
   const [subs, setSubs]     = useState([])
   const [paidMap, setPaidMap]  = useState({})
+  const [showImport, setShowImport] = useState(false)
+  const [csvText, setCsvText]       = useState('')
+  const [importing, setImporting]   = useState(false)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -163,6 +172,59 @@ export default function Subscribers() {
     s.name.includes(search) || s.phone.includes(search))
   if (filter === 'late') list = list.filter(s => calcDebt(s, paidMap[s.id]||[]).length > 0)
   if (filter === 'paid') list = list.filter(s => calcDebt(s, paidMap[s.id]||[]).length === 0)
+
+  async function importFromCSV() {
+    if (!csvText.trim()) { toast('الصق بيانات CSV أولاً','e'); return }
+    setImporting(true)
+    const lines = csvText.trim().split('\n').filter(l => l.trim())
+    if (lines.length < 2) { toast('البيانات غير كافية','e'); setImporting(false); return }
+    
+    // Parse header to find columns
+    const sep    = lines[0].includes('\t') ? '\t' : ','
+    const header = lines[0].split(sep).map(h => h.trim().replace(/"/g,'').toLowerCase())
+    
+    const findCol = (...keys) => {
+      for (const k of keys) {
+        const i = header.findIndex(h => h.includes(k))
+        if (i >= 0) return i
+      }
+      return -1
+    }
+    
+    const nameIdx  = findCol('اسم','name')
+    const phoneIdx = findCol('هاتف','phone','موبايل','tel')
+    const feeIdx   = findCol('شهري','fee','رسم','price','مبلغ')
+    const dateIdx  = findCol('بداية','start','تاريخ','date')
+    const paidIdx  = findCol('مدفوع','paid','last')
+
+    if (nameIdx < 0) { toast('لم يُعثر على عمود الاسم في CSV','e'); setImporting(false); return }
+
+    let imported = 0, skipped = 0
+    for (const line of lines.slice(1)) {
+      const cols = line.split(sep).map(v => v.trim().replace(/^"|"$/g,''))
+      const name = cols[nameIdx]?.trim()
+      if (!name) { skipped++; continue }
+
+      const payload = {
+        company_id:    company.id,
+        name,
+        phone:         phoneIdx >= 0 ? cols[phoneIdx]?.trim() || '' : '',
+        monthly_fee:   feeIdx   >= 0 ? parseFloat(cols[feeIdx]) || 0 : 0,
+        start_date:    dateIdx  >= 0 && cols[dateIdx]?.trim()
+                         ? cols[dateIdx].trim().slice(0,10)
+                         : new Date().toISOString().slice(0,10),
+        last_paid_month: paidIdx >= 0 ? cols[paidIdx]?.trim() || null : null,
+        is_active:     true,
+      }
+
+      const { error } = await supabase.from('subscribers').insert(payload)
+      if (!error) imported++; else skipped++
+    }
+    
+    setImporting(false)
+    toast(`تم استيراد ${imported} مشترك ✅ (تخطي: ${skipped})`, 's')
+    if (imported > 0) { setShowImport(false); setCsvText(''); load() }
+  }
 
   return (
     <div className="page">
@@ -276,6 +338,95 @@ export default function Subscribers() {
             </button>
             <button className="btn btn-ghost" style={{marginTop:9}}
               onClick={() => setShowModal(false)}>
+              إلغاء
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ════ CSV Import Modal ════ */}
+      {showImport && (
+        <div style={{position:'fixed',inset:0,zIndex:500,
+          background:'rgba(4,8,22,.75)',backdropFilter:'blur(8px)',
+          display:'flex',alignItems:'flex-end',justifyContent:'center'}}
+          onClick={e=>{if(e.target===e.currentTarget)setShowImport(false)}}>
+          <div style={{width:'100%',maxWidth:560,background:'var(--sur)',
+            borderRadius:'26px 26px 0 0',padding:'10px 20px 36px',
+            borderTop:'1px solid var(--bdr)',maxHeight:'90vh',overflowY:'auto'}}>
+            <div style={{width:38,height:4,background:'var(--bdr)',
+              borderRadius:4,margin:'8px auto 18px'}}/>
+            <div style={{fontSize:17,fontWeight:800,color:'var(--ink)',
+              marginBottom:6,display:'flex',alignItems:'center',gap:10}}>
+              📥 استيراد مشتركين من CSV أو Google Sheets
+              <button onClick={()=>setShowImport(false)}
+                style={{marginRight:'auto',width:32,height:32,borderRadius:'50%',
+                  background:'var(--bg2)',border:'none',cursor:'pointer',
+                  color:'var(--ink3)',fontSize:15}}>✕</button>
+            </div>
+
+            <div style={{background:'rgba(26,63,219,.06)',borderRadius:12,
+              padding:'11px 14px',marginBottom:14,fontSize:13,color:'var(--ink2)',lineHeight:1.8}}>
+              <strong>تنسيق الأعمدة المدعومة:</strong><br/>
+              الاسم، رقم الهاتف، الرسم الشهري، تاريخ البداية، آخر شهر مدفوع<br/>
+              <span style={{fontSize:11,color:'var(--ink3)'}}>
+                ملاحظة: العمود الوحيد المطلوب هو "الاسم"، الباقي اختياري
+              </span>
+            </div>
+
+            <div style={{background:'rgba(5,150,105,.06)',border:'1px solid rgba(5,150,105,.2)',
+              borderRadius:12,padding:'11px 14px',marginBottom:14,fontSize:12,
+              color:'var(--ink2)',lineHeight:1.8}}>
+              <strong>📊 لجلب من Google Sheets:</strong><br/>
+              1. افتح الجدول → File → Download → CSV<br/>
+              2. افتح الملف بـ Notepad وانسخ المحتوى<br/>
+              3. الصقه في الحقل أدناه
+            </div>
+
+            <div style={{marginBottom:14}}>
+              <label style={{fontSize:13,fontWeight:700,color:'var(--ink2)',
+                display:'block',marginBottom:6}}>
+                الصق بيانات CSV هنا:
+              </label>
+              <textarea
+                style={{width:'100%',height:180,padding:12,borderRadius:10,
+                  border:'1px solid var(--bdr)',background:'var(--bg2)',
+                  color:'var(--ink)',fontFamily:'monospace',fontSize:12,
+                  resize:'vertical',outline:'none',direction:'ltr',
+                  boxSizing:'border-box'}}
+                placeholder={"الاسم,الهاتف,الرسم الشهري,تاريخ البداية\nأحمد محمد,07701234567,35000,2025-01-01\nعلي حسن,07709876543,25000,2025-03-01"}
+                value={csvText}
+                onChange={e=>setCsvText(e.target.value)}/>
+            </div>
+
+            {/* File upload option */}
+            <div style={{marginBottom:14}}>
+              <label style={{fontSize:13,fontWeight:700,color:'var(--ink2)',
+                display:'block',marginBottom:6}}>
+                أو ارفع ملف CSV:
+              </label>
+              <input type="file" accept=".csv,.txt"
+                style={{fontSize:13,color:'var(--ink)'}}
+                onChange={e=>{
+                  const file = e.target.files[0]
+                  if (!file) return
+                  const reader = new FileReader()
+                  reader.onload = ev => setCsvText(ev.target.result)
+                  reader.readAsText(file,'utf-8')
+                }}/>
+            </div>
+
+            <button onClick={importFromCSV} disabled={importing || !csvText.trim()}
+              style={{width:'100%',padding:14,borderRadius:12,border:'none',
+                background: csvText.trim()
+                  ? 'linear-gradient(135deg,#065f46,#059669)' : '#d1d5db',
+                color:'#fff',fontWeight:800,fontSize:15,
+                cursor:csvText.trim()?'pointer':'not-allowed',marginBottom:9}}>
+              {importing ? '⏳ جاري الاستيراد...' : '📥 استيراد المشتركين'}
+            </button>
+            <button onClick={()=>{setShowImport(false);setCsvText('')}}
+              style={{width:'100%',padding:12,borderRadius:12,
+                border:'1px solid var(--bdr)',background:'transparent',
+                color:'var(--ink3)',fontWeight:700,fontSize:14,cursor:'pointer'}}>
               إلغاء
             </button>
           </div>
