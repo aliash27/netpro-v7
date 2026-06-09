@@ -1,137 +1,163 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
-const AuthContext = createContext({})
+const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser]               = useState(null)
-  const [company, setCompany]         = useState(null)
-  const [accountant, setAccountant]   = useState(null) // sub-accountant info
-  const [loading, setLoading]         = useState(true)
+  const [user, setUser]         = useState(null)
+  const [company, setCompany]   = useState(null)
+  const [role, setRole]         = useState(null)   // 'owner' | 'accountant' | 'viewer' | 'admin'
+  const [loading, setLoading]   = useState(true)
+  const [planExpired, setPlanExpired] = useState(false)
 
+  // ─── تحميل بيانات الشركة ───────────────────────────────
+  const loadCompany = useCallback(async (authUser) => {
+    if (!authUser) {
+      setCompany(null); setRole(null); setPlanExpired(false)
+      return
+    }
+
+    try {
+      // هل هو مالك شركة؟
+      const { data: ownCompany } = await supabase
+        .from('companies')
+        .select('*')
+        .eq('owner_id', authUser.id)
+        .maybeSingle()
+
+      if (ownCompany) {
+        setCompany(ownCompany)
+        setRole(ownCompany.is_admin ? 'admin' : 'owner')
+        _checkPlanExpiry(ownCompany)
+        return
+      }
+
+      // هل هو محاسب فرعي؟
+      const { data: subAcc } = await supabase
+        .from('sub_accountants')
+        .select('*, companies(*)')
+        .eq('auth_user_id', authUser.id)
+        .eq('is_active', true)
+        .maybeSingle()
+
+      if (subAcc?.companies) {
+        setCompany(subAcc.companies)
+        setRole(subAcc.role === 'viewer' ? 'viewer' : 'accountant')
+        _checkPlanExpiry(subAcc.companies)
+        return
+      }
+
+      // لا توجد شركة مرتبطة
+      setCompany(null); setRole(null)
+    } catch (err) {
+      console.error('loadCompany error:', err)
+      setCompany(null); setRole(null)
+    }
+  }, [])
+
+  // ─── فحص انتهاء الباقة ────────────────────────────────
+  function _checkPlanExpiry(comp) {
+    if (!comp || comp.is_admin) { setPlanExpired(false); return }
+
+    const now = new Date()
+    if (comp.plan === 'trial' && comp.trial_end) {
+      setPlanExpired(new Date(comp.trial_end) < now)
+    } else if (comp.plan_end_date) {
+      setPlanExpired(new Date(comp.plan_end_date) < now)
+    } else {
+      setPlanExpired(false)
+    }
+  }
+
+  // ─── الاستماع لتغييرات Auth ────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)
-      if (session?.user) fetchUserContext(session.user)
-      else setLoading(false)
+      loadCompany(session?.user ?? null).finally(() => setLoading(false))
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         setUser(session?.user ?? null)
-        if (session?.user) fetchUserContext(session.user)
-        else { setCompany(null); setAccountant(null); setLoading(false) }
+        if (event === 'SIGNED_OUT') {
+          setCompany(null); setRole(null); setPlanExpired(false); setLoading(false)
+          return
+        }
+        await loadCompany(session?.user ?? null)
+        setLoading(false)
       }
     )
     return () => subscription.unsubscribe()
-  }, [])
+  }, [loadCompany])
 
-  async function fetchUserContext(authUser) {
-    // Check if this user is an owner (has a company)
-    const { data: companyData } = await supabase
-      .from('companies')
-      .select('*')
-      .eq('owner_id', authUser.id)
-      .single()
-
-    if (companyData) {
-      setCompany(companyData)
-      setAccountant(null)
-      setLoading(false)
-      return
-    }
-
-    // Check if this user is a sub-accountant
-    const { data: accData } = await supabase
-      .from('sub_accountants')
-      .select('*, companies(*)')
-      .eq('auth_user_id', authUser.id)
-      .eq('is_active', true)
-      .single()
-
-    if (accData) {
-      setCompany(accData.companies) // load the parent company
-      setAccountant({
-        id:   accData.id,
-        name: accData.name,
-        role: accData.role,  // 'accountant' | 'viewer'
-      })
-      setLoading(false)
-      return
-    }
-
-    setLoading(false)
+  // ─── تسجيل الدخول ────────────────────────────────────
+  async function signIn(email, password) {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
+    return data
   }
 
-  async function signUp(email, password, companyName, phone) {
+  // ─── إنشاء حساب جديد ─────────────────────────────────
+  async function signUp(email, password, companyName) {
     const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
+      email, password,
       options: { data: { company_name: companyName } }
     })
     if (error) throw error
-    if (data.user) {
-      await supabase.from('companies')
-        .update({ name: companyName, phone })
-        .eq('owner_id', data.user.id)
-    }
     return data
   }
 
-  async function signIn(email, password) {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email, password
-    })
-    if (error) throw error
-    return data
-  }
-
+  // ─── تسجيل الخروج ────────────────────────────────────
   async function signOut() {
     await supabase.auth.signOut()
-    setCompany(null)
-    setAccountant(null)
   }
 
-  async function updateCompany(updates) {
-    if (!company) return
-    const { data, error } = await supabase
-      .from('companies')
-      .update(updates)
-      .eq('id', company.id)
-      .select()
-      .single()
-    if (!error) setCompany(data)
-    return { data, error }
+  // ─── إعادة تحميل بيانات الشركة (بعد تحديث الباقة مثلاً) ──
+  async function refreshCompany() {
+    if (user) await loadCompany(user)
   }
 
-  const trialDaysLeft = company
-    ? Math.max(0, Math.ceil(
-        (new Date(company.trial_end) - new Date()) / 86400000
-      ))
-    : 7
+  // ─── الصلاحيات ────────────────────────────────────────
+  const canWrite  = role === 'owner' || role === 'accountant' || role === 'admin'
+  const canDelete = role === 'owner' || role === 'admin'
+  const isAdmin   = role === 'admin'
+  const isOwner   = role === 'owner'
 
-  const isTrialActive = company?.plan === 'trial' && trialDaysLeft > 0
-  const isPro = ['pro', 'business'].includes(company?.plan)
-  const isAdmin = company?.is_admin === true
+  // ─── فحص حد المشتركين ─────────────────────────────────
+  async function checkSubscriberLimit() {
+    if (!company || isAdmin) return true
+    const limit = company.max_subscribers ?? 100
+    if (limit >= 999999) return true
+    const { count } = await supabase
+      .from('subscribers')
+      .select('id', { count: 'exact', head: true })
+      .eq('company_id', company.id)
+      .eq('is_active', true)
+    return (count ?? 0) < limit
+  }
 
-  // Accountant role checks
-  const isViewer    = accountant?.role === 'viewer'
-  const isAccountant = !!accountant
+  const value = {
+    user,
+    company,
+    role,
+    loading,
+    planExpired,
+    canWrite,
+    canDelete,
+    isAdmin,
+    isOwner,
+    signIn,
+    signUp,
+    signOut,
+    refreshCompany,
+    checkSubscriberLimit,
+  }
 
-  return (
-    <AuthContext.Provider value={{
-      user, company, loading,
-      accountant, isAccountant, isViewer,
-      signUp, signIn, signOut,
-      updateCompany,
-      trialDaysLeft,
-      isTrialActive,
-      isPro, isAdmin,
-      refreshCompany: () => user && fetchUserContext(user)
-    }}>
-      {children}
-    </AuthContext.Provider>
-  )
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-export const useAuth = () => useContext(AuthContext)
+export const useAuth = () => {
+  const ctx = useContext(AuthContext)
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
+  return ctx
+}
