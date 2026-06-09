@@ -1,82 +1,155 @@
 /**
- * NotificationEngine v10
- * Smart startup notifications using shared calcDebt
+ * NotificationEngine
+ * يعمل في الخلفية لفحص الديون والاشتراكات المنتهية
+ * وتخزين الإشعارات في جدول notifications (تستمر بين الجلسات)
  */
-import { useEffect } from 'react'
-import { supabase }  from '../lib/supabase'
-import { useAuth }   from '../context/AuthContext'
-import { toast }     from './Toast'
-import { calcDebt, buildPaidMap } from '../utils'
+import { useEffect, useRef } from 'react'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../context/AuthContext'
+
+const ARABIC_MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
 
 export default function NotificationEngine() {
-  const { company, trialDaysLeft, isTrialActive } = useAuth()
+  const { company, canWrite } = useAuth()
+  const lastRun = useRef(null)
 
   useEffect(() => {
-    if (!company) return
-    const key = 'np_notif_' + new Date().toISOString().slice(0, 10)
-    if (sessionStorage.getItem(key)) return
-    sessionStorage.setItem(key, '1')
+    if (!company || !canWrite) return
 
-    setTimeout(checkDebtors,    2000)
-    setTimeout(checkExpiries,   5500)
-    setTimeout(checkPlanExpiry, 8000)
+    // شغّل فور التحميل
+    runChecks()
+
+    // وكل 30 دقيقة
+    const t = setInterval(runChecks, 30 * 60_000)
+    return () => clearInterval(t)
   }, [company])
 
-  async function checkDebtors() {
+  async function runChecks() {
     if (!company) return
-    const [{ data: subs, error: e1 }, { data: pays, error: e2 }] = await Promise.all([
-      supabase.from('subscribers').select('id,name,start_date,monthly_fee,last_paid_month')
-        .eq('company_id', company.id).eq('is_active', true),
-      supabase.from('payments').select('subscriber_id,month')
-        .eq('company_id', company.id)
+    // منع التشغيل المتكرر خلال 5 دقائق
+    const now = Date.now()
+    if (lastRun.current && now - lastRun.current < 5 * 60_000) return
+    lastRun.current = now
+
+    await Promise.all([
+      checkDebts(),
+      checkExpiry(),
     ])
-    if (e1 || e2) return
-    const pm     = buildPaidMap(pays || [])
-    const late   = (subs || []).filter(s => calcDebt(s, pm[s.id] || []).length > 0)
-    const urgent = late.filter(s => calcDebt(s, pm[s.id] || []).length >= 3)
-    if (urgent.length)
-      toast(`🚨 ${urgent.length} مشترك متأخر 3 أشهر أو أكثر — متابعة عاجلة!`, 'e', 8000)
-    else if (late.length)
-      toast(`⚠️ ${late.length} مشترك متأخر عن الدفع`, 'w', 5000)
   }
 
-  async function checkExpiries() {
-    if (!company) return
-    const { data: subs, error } = await supabase
-      .from('subscribers').select('id,name,subscription_end')
-      .eq('company_id', company.id).eq('is_active', true)
-      .not('subscription_end', 'is', null)
-    if (error) return
+  // ─── فحص الديون ──────────────────────────────────────
+  async function checkDebts() {
+    const { data: subs } = await supabase
+      .from('subscribers')
+      .select('id, name, start_date, monthly_fee, last_paid_month')
+      .eq('company_id', company.id)
+      .eq('is_active', true)
+
+    if (!subs?.length) return
+
     const now     = new Date()
-    const soon    = (subs || []).filter(s => {
-      const d = new Date(s.subscription_end)
-      const days = Math.ceil((d - now) / 86400000)
-      return days >= 0 && days <= 7
-    })
-    const expired = (subs || []).filter(s => new Date(s.subscription_end) < now)
-    if (expired.length)
-      toast(`🔴 ${expired.length} مشترك انتهى اشتراكه`, 'e', 7000)
-    else if (soon.length)
-      toast(`⏳ ${soon.length} مشترك اشتراكه على وشك الانتهاء`, 'w', 6000)
+    const curYear = now.getFullYear()
+    const curMon  = now.getMonth() + 1
+    const toCreate = []
+
+    for (const s of subs) {
+      const debt = calcDebtMonths(s, curYear, curMon)
+      if (debt >= 2) {
+        // هل يوجد إشعار حديث لهذا المشترك؟
+        const { data: existing } = await supabase
+          .from('notifications')
+          .select('id')
+          .eq('company_id', company.id)
+          .eq('type', 'debt')
+          .eq('subscriber_id', s.id)
+          .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+          .maybeSingle()
+
+        if (!existing) {
+          toCreate.push({
+            company_id:    company.id,
+            type:          'debt',
+            title:         `دين متراكم: ${s.name}`,
+            body:          `${debt} شهر غير مدفوع — ${(debt * s.monthly_fee).toLocaleString()} IQD`,
+            subscriber_id: s.id,
+          })
+        }
+      }
+    }
+
+    if (toCreate.length) {
+      await supabase.from('notifications').insert(toCreate)
+    }
   }
 
-  function checkPlanExpiry() {
-    if (!company) return
-    if (isTrialActive) {
-      if (trialDaysLeft <= 2)
-        toast(`🔴 ينتهي حسابك التجريبي خلال ${trialDaysLeft} أيام — جدد الآن`, 'e', 0)
-      else if (trialDaysLeft <= 5)
-        toast(`⏰ متبقي ${trialDaysLeft} أيام من التجربة المجانية`, 'w', 6000)
-      return
+  // ─── فحص الانتهاء القريب ─────────────────────────────
+  async function checkExpiry() {
+    const soon = new Date()
+    soon.setDate(soon.getDate() + 7)
+
+    const { data: subs } = await supabase
+      .from('subscribers')
+      .select('id, name, subscription_end')
+      .eq('company_id', company.id)
+      .eq('is_active', true)
+      .not('subscription_end', 'is', null)
+      .lte('subscription_end', soon.toISOString().split('T')[0])
+      .gte('subscription_end', new Date().toISOString().split('T')[0])
+
+    if (!subs?.length) return
+
+    const toCreate = []
+    for (const s of subs) {
+      const { data: existing } = await supabase
+        .from('notifications')
+        .select('id')
+        .eq('company_id', company.id)
+        .eq('type', 'expiry')
+        .eq('subscriber_id', s.id)
+        .gte('created_at', new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString())
+        .maybeSingle()
+
+      if (!existing) {
+        const days = Math.ceil((new Date(s.subscription_end) - new Date()) / 86400000)
+        toCreate.push({
+          company_id:    company.id,
+          type:          'expiry',
+          title:         `اشتراك ينتهي قريباً: ${s.name}`,
+          body:          `ينتهي خلال ${days} ${days === 1 ? 'يوم' : 'أيام'} — ${s.subscription_end}`,
+          subscriber_id: s.id,
+        })
+      }
     }
-    if (company.trial_end) {
-      const days = Math.ceil((new Date(company.trial_end) - new Date()) / 86400000)
-      if (days <= 0)
-        toast(`🔴 انتهى اشتراكك — تواصل معنا لتجديده`, 'e', 0)
-      else if (days <= 7)
-        toast(`⏳ اشتراكك ينتهي خلال ${days} أيام — جدد لتجنب الانقطاع`, 'w', 8000)
+
+    if (toCreate.length) {
+      await supabase.from('notifications').insert(toCreate)
     }
   }
 
-  return null
+  return null // لا يعرض شيئاً
+}
+
+// ─── حساب أشهر الدين ─────────────────────────────────────
+function calcDebtMonths(sub, curYear, curMon) {
+  if (!sub.start_date) return 0
+
+  const start = new Date(sub.start_date)
+  let debtFrom = { year: start.getFullYear(), month: start.getMonth() + 1 }
+
+  if (sub.last_paid_month) {
+    const [y, m] = sub.last_paid_month.split('-').map(Number)
+    if (!isNaN(y) && !isNaN(m)) {
+      // الشهر التالي بعد آخر دفعة
+      debtFrom = m === 12 ? { year: y + 1, month: 1 } : { year: y, month: m + 1 }
+    }
+  }
+
+  let count = 0
+  let y = debtFrom.year, m = debtFrom.month
+  while (y < curYear || (y === curYear && m <= curMon)) {
+    count++
+    m++
+    if (m > 12) { m = 1; y++ }
+  }
+  return Math.max(0, count - 1) // الشهر الحالي لا يحتسب ديناً
 }
