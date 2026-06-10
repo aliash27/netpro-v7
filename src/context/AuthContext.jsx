@@ -6,13 +6,14 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user,        setUser]        = useState(null)
   const [company,     setCompany]     = useState(null)
+  const [accountant,  setAccountant]  = useState(null) // بيانات المحاسب الفرعي
   const [role,        setRole]        = useState(null)
   const [loading,     setLoading]     = useState(true)
   const [planExpired, setPlanExpired] = useState(false)
 
   const loadCompany = useCallback(async (authUser) => {
     if (!authUser) {
-      setCompany(null); setRole(null); setPlanExpired(false)
+      setCompany(null); setRole(null); setAccountant(null); setPlanExpired(false)
       return
     }
     try {
@@ -26,6 +27,7 @@ export function AuthProvider({ children }) {
       if (ownRows && ownRows.length > 0) {
         const c = ownRows[0]
         setCompany(c)
+        setAccountant(null)
         setRole(c.is_admin ? 'admin' : 'owner')
         checkExpiry(c)
         return
@@ -34,7 +36,7 @@ export function AuthProvider({ children }) {
       // هل هو محاسب فرعي؟
       const { data: subRows } = await supabase
         .from('sub_accountants')
-        .select('role, company_id, companies(*)')
+        .select('*, companies(*)')
         .eq('auth_user_id', authUser.id)
         .eq('is_active', true)
         .limit(1)
@@ -42,15 +44,16 @@ export function AuthProvider({ children }) {
       if (subRows && subRows.length > 0 && subRows[0].companies) {
         const sub = subRows[0]
         setCompany(sub.companies)
+        setAccountant(sub)
         setRole(sub.role === 'viewer' ? 'viewer' : 'accountant')
         checkExpiry(sub.companies)
         return
       }
 
-      setCompany(null); setRole(null)
+      setCompany(null); setRole(null); setAccountant(null)
     } catch (err) {
       console.error('loadCompany:', err.message)
-      setCompany(null); setRole(null)
+      setCompany(null); setRole(null); setAccountant(null)
     }
   }, [])
 
@@ -82,7 +85,8 @@ export function AuthProvider({ children }) {
         const u = session?.user ?? null
         setUser(u)
         if (event === 'SIGNED_OUT') {
-          setCompany(null); setRole(null); setPlanExpired(false); setLoading(false)
+          setCompany(null); setRole(null); setAccountant(null)
+          setPlanExpired(false); setLoading(false)
           return
         }
         await loadCompany(u)
@@ -116,14 +120,25 @@ export function AuthProvider({ children }) {
     if (user) await loadCompany(user)
   }
 
-  const canWrite  = role === 'owner' || role === 'accountant' || role === 'admin'
-  const canDelete = role === 'owner' || role === 'admin'
+  // حساب أيام التجربة المتبقية
+  const trialDaysLeft = (() => {
+    if (!company || company.plan !== 'trial' || !company.trial_end) return 0
+    const diff = new Date(company.trial_end) - new Date()
+    return Math.max(0, Math.ceil(diff / 86400000))
+  })()
+
+  const isTrialActive = company?.plan === 'trial' && trialDaysLeft > 0
+
+  // الصلاحيات — متوافقة مع الكود الأصلي
+  const isViewer  = role === 'viewer'
   const isAdmin   = role === 'admin'
   const isOwner   = role === 'owner'
+  const canWrite  = role === 'owner' || role === 'accountant' || role === 'admin'
+  const canDelete = role === 'owner' || role === 'admin'
 
   async function checkSubscriberLimit() {
     if (!company || isAdmin) return true
-    const limit = company.max_subscribers ?? 100
+    const limit = company.max_subscribers ?? 999999
     if (limit >= 999999) return true
     const { count } = await supabase
       .from('subscribers')
@@ -135,8 +150,9 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
-      user, company, role, loading, planExpired,
-      canWrite, canDelete, isAdmin, isOwner,
+      user, company, accountant, role, loading, planExpired,
+      trialDaysLeft, isTrialActive,
+      isViewer, isAdmin, isOwner, canWrite, canDelete,
       signIn, signUp, signOut, refreshCompany, checkSubscriberLimit,
     }}>
       {children}
