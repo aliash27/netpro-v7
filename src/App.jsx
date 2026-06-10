@@ -1,107 +1,111 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import NotificationEngine from './components/NotificationEngine'
-import Layout       from './components/Layout'
-import LoadingScreen from './components/LoadingScreen'
+import { Suspense, lazy } from 'react'
 
-// Pages
-import Login           from './pages/Login'
-import Dashboard       from './pages/Dashboard'
-import Subscribers     from './pages/Subscribers'
-import SubscriberDetail from './pages/SubscriberDetail'
-import Debts           from './pages/Debts'
-import Payments        from './pages/Payments'
-import Reports         from './pages/Reports'
-import Sheets          from './pages/Sheets'
-import Settings        from './pages/Settings'
-import Accountants     from './pages/Accountants'
-import SubscribePlan   from './pages/SubscribePlan'
-import AdminDashboard  from './pages/admin/AdminDashboard'
+// Lazy load كل الصفحات لتجنب أخطاء الاستيراد
+const Layout         = lazy(() => import('./components/Layout'))
+const Login          = lazy(() => import('./pages/Login'))
+const Dashboard      = lazy(() => import('./pages/Dashboard'))
+const Subscribers    = lazy(() => import('./pages/Subscribers'))
+const SubscriberDetail = lazy(() => import('./pages/SubscriberDetail'))
+const Debts          = lazy(() => import('./pages/Debts'))
+const Payments       = lazy(() => import('./pages/Payments'))
+const Reports        = lazy(() => import('./pages/Reports'))
+const Sheets         = lazy(() => import('./pages/Sheets'))
+const Settings       = lazy(() => import('./pages/Settings'))
+const Accountants    = lazy(() => import('./pages/Accountants'))
+const SubscribePlan  = lazy(() => import('./pages/SubscribePlan'))
+const AdminDashboard = lazy(() => import('./pages/admin/AdminDashboard'))
+
+// Loading بسيط بدون CSS خارجي
+function SimpleLoading() {
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: '#0f172a',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 16,
+      fontFamily: 'system-ui, sans-serif'
+    }}>
+      <div style={{ fontSize: 48 }}>📡</div>
+      <div style={{
+        fontSize: 20, fontWeight: 800, color: '#fff'
+      }}>نيت برو</div>
+      <div style={{ fontSize: 13, color: '#64748b' }}>جاري التحميل...</div>
+      <div style={{
+        width: 200, height: 4, background: '#1e293b', borderRadius: 4, overflow: 'hidden'
+      }}>
+        <div style={{
+          width: '60%', height: '100%',
+          background: 'linear-gradient(90deg,#3b82f6,#8b5cf6)',
+          borderRadius: 4,
+          animation: 'slide 1.5s ease-in-out infinite'
+        }} />
+      </div>
+      <style>{`
+        @keyframes slide {
+          0% { transform: translateX(-100%) }
+          100% { transform: translateX(300%) }
+        }
+      `}</style>
+    </div>
+  )
+}
 
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRoutes />
+        <Suspense fallback={<SimpleLoading />}>
+          <AppRoutes />
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   )
 }
 
 function AppRoutes() {
-  const { loading } = useAuth()
+  const { loading, user, isAdmin } = useAuth()
 
-  if (loading) return <LoadingScreen />
+  if (loading) return <SimpleLoading />
 
   return (
-    <>
-      <NotificationEngine />
-      <Routes>
-        {/* عام */}
-        <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
+    <Routes>
+      {/* عام */}
+      <Route path="/login" element={
+        user ? <Navigate to={isAdmin ? '/admin' : '/dashboard'} replace /> : <Login />
+      } />
 
-        {/* أدمن */}
-        <Route path="/admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+      {/* أدمن */}
+      <Route path="/admin" element={
+        !user ? <Navigate to="/login" replace /> :
+        !isAdmin ? <Navigate to="/dashboard" replace /> :
+        <AdminDashboard />
+      } />
 
-        {/* مستخدم عادي */}
-        <Route element={<PrivateRoute><Layout /></PrivateRoute>}>
-          <Route path="/dashboard"           element={<Dashboard />} />
-          <Route path="/subscribers"         element={<Subscribers />} />
-          <Route path="/subscribers/:id"     element={<SubscriberDetail />} />
-          <Route path="/debts"               element={<Debts />} />
-          <Route path="/payments"            element={<Payments />} />
-          <Route path="/reports"             element={<Reports />} />
-          <Route path="/sheets"              element={<Sheets />} />
-          <Route path="/accountants"         element={<OwnerRoute><Accountants /></OwnerRoute>} />
-          <Route path="/settings"            element={<Settings />} />
-          <Route path="/subscribe"           element={<SubscribePlan />} />
-        </Route>
+      {/* مستخدم عادي */}
+      <Route element={
+        !user ? <Navigate to="/login" replace /> :
+        isAdmin ? <Navigate to="/admin" replace /> :
+        <Layout />
+      }>
+        <Route path="/dashboard"       element={<Dashboard />} />
+        <Route path="/subscribers"     element={<Subscribers />} />
+        <Route path="/subscribers/:id" element={<SubscriberDetail />} />
+        <Route path="/debts"           element={<Debts />} />
+        <Route path="/payments"        element={<Payments />} />
+        <Route path="/reports"         element={<Reports />} />
+        <Route path="/sheets"          element={<Sheets />} />
+        <Route path="/accountants"     element={<Accountants />} />
+        <Route path="/settings"        element={<Settings />} />
+        <Route path="/subscribe"       element={<SubscribePlan />} />
+      </Route>
 
-        {/* Fallback */}
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </>
-  )
-}
-
-// ─── Guards ───────────────────────────────────────────────
-
-function PublicRoute({ children }) {
-  const { user, isAdmin, loading } = useAuth()
-  if (loading) return <LoadingScreen />
-  if (user) return <Navigate to={isAdmin ? '/admin' : '/dashboard'} replace />
-  return children
-}
-
-function PrivateRoute({ children }) {
-  const { user, isAdmin, loading } = useAuth()
-  if (loading) return <LoadingScreen />
-  if (!user)   return <Navigate to="/login"   replace />
-  if (isAdmin) return <Navigate to="/admin"   replace />
-  return children
-}
-
-function AdminRoute({ children }) {
-  const { user, isAdmin, loading } = useAuth()
-  if (loading)  return <LoadingScreen />
-  if (!user)    return <Navigate to="/login"     replace />
-  if (!isAdmin) return <Navigate to="/dashboard" replace />
-  return children
-}
-
-function OwnerRoute({ children }) {
-  const { role } = useAuth()
-  if (role !== 'owner') return <Navigate to="/dashboard" replace />
-  return children
-}
-
-function NotFound() {
-  return (
-    <div dir="rtl" style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a', color: '#94a3b8', textAlign: 'center', flexDirection: 'column', gap: 16 }}>
-      <div style={{ fontSize: 64 }}>🌐</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: '#f1f5f9' }}>404 — الصفحة غير موجودة</div>
-      <a href="/dashboard" style={{ color: '#6366f1', textDecoration: 'none', fontSize: 15 }}>← العودة للرئيسية</a>
-    </div>
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+    </Routes>
   )
 }
