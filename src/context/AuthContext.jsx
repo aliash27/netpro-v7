@@ -4,61 +4,58 @@ import { supabase } from '../lib/supabase'
 const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser]         = useState(null)
-  const [company, setCompany]   = useState(null)
-  const [role, setRole]         = useState(null)   // 'owner' | 'accountant' | 'viewer' | 'admin'
-  const [loading, setLoading]   = useState(true)
+  const [user,        setUser]        = useState(null)
+  const [company,     setCompany]     = useState(null)
+  const [role,        setRole]        = useState(null)
+  const [loading,     setLoading]     = useState(true)
   const [planExpired, setPlanExpired] = useState(false)
 
-  // ─── تحميل بيانات الشركة ───────────────────────────────
   const loadCompany = useCallback(async (authUser) => {
     if (!authUser) {
       setCompany(null); setRole(null); setPlanExpired(false)
       return
     }
-
     try {
       // هل هو مالك شركة؟
-      const { data: ownCompany } = await supabase
+      const { data: ownRows } = await supabase
         .from('companies')
         .select('*')
         .eq('owner_id', authUser.id)
-        .maybeSingle()
+        .limit(1)
 
-      if (ownCompany) {
-        setCompany(ownCompany)
-        setRole(ownCompany.is_admin ? 'admin' : 'owner')
-        _checkPlanExpiry(ownCompany)
+      if (ownRows && ownRows.length > 0) {
+        const c = ownRows[0]
+        setCompany(c)
+        setRole(c.is_admin ? 'admin' : 'owner')
+        checkExpiry(c)
         return
       }
 
       // هل هو محاسب فرعي؟
-      const { data: subAcc } = await supabase
+      const { data: subRows } = await supabase
         .from('sub_accountants')
-        .select('*, companies(*)')
+        .select('role, company_id, companies(*)')
         .eq('auth_user_id', authUser.id)
         .eq('is_active', true)
-        .maybeSingle()
+        .limit(1)
 
-      if (subAcc?.companies) {
-        setCompany(subAcc.companies)
-        setRole(subAcc.role === 'viewer' ? 'viewer' : 'accountant')
-        _checkPlanExpiry(subAcc.companies)
+      if (subRows && subRows.length > 0 && subRows[0].companies) {
+        const sub = subRows[0]
+        setCompany(sub.companies)
+        setRole(sub.role === 'viewer' ? 'viewer' : 'accountant')
+        checkExpiry(sub.companies)
         return
       }
 
-      // لا توجد شركة مرتبطة
       setCompany(null); setRole(null)
     } catch (err) {
-      console.error('loadCompany error:', err)
+      console.error('loadCompany:', err.message)
       setCompany(null); setRole(null)
     }
   }, [])
 
-  // ─── فحص انتهاء الباقة ────────────────────────────────
-  function _checkPlanExpiry(comp) {
+  function checkExpiry(comp) {
     if (!comp || comp.is_admin) { setPlanExpired(false); return }
-
     const now = new Date()
     if (comp.plan === 'trial' && comp.trial_end) {
       setPlanExpired(new Date(comp.trial_end) < now)
@@ -69,35 +66,39 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // ─── الاستماع لتغييرات Auth ────────────────────────────
   useEffect(() => {
+    let mounted = true
+
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-      loadCompany(session?.user ?? null).finally(() => setLoading(false))
+      if (!mounted) return
+      const u = session?.user ?? null
+      setUser(u)
+      loadCompany(u).finally(() => { if (mounted) setLoading(false) })
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        setUser(session?.user ?? null)
+        if (!mounted) return
+        const u = session?.user ?? null
+        setUser(u)
         if (event === 'SIGNED_OUT') {
           setCompany(null); setRole(null); setPlanExpired(false); setLoading(false)
           return
         }
-        await loadCompany(session?.user ?? null)
-        setLoading(false)
+        await loadCompany(u)
+        if (mounted) setLoading(false)
       }
     )
-    return () => subscription.unsubscribe()
+
+    return () => { mounted = false; subscription.unsubscribe() }
   }, [loadCompany])
 
-  // ─── تسجيل الدخول ────────────────────────────────────
   async function signIn(email, password) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
     return data
   }
 
-  // ─── إنشاء حساب جديد ─────────────────────────────────
   async function signUp(email, password, companyName) {
     const { data, error } = await supabase.auth.signUp({
       email, password,
@@ -107,23 +108,19 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  // ─── تسجيل الخروج ────────────────────────────────────
   async function signOut() {
     await supabase.auth.signOut()
   }
 
-  // ─── إعادة تحميل بيانات الشركة (بعد تحديث الباقة مثلاً) ──
   async function refreshCompany() {
     if (user) await loadCompany(user)
   }
 
-  // ─── الصلاحيات ────────────────────────────────────────
   const canWrite  = role === 'owner' || role === 'accountant' || role === 'admin'
   const canDelete = role === 'owner' || role === 'admin'
   const isAdmin   = role === 'admin'
   const isOwner   = role === 'owner'
 
-  // ─── فحص حد المشتركين ─────────────────────────────────
   async function checkSubscriberLimit() {
     if (!company || isAdmin) return true
     const limit = company.max_subscribers ?? 100
@@ -136,24 +133,15 @@ export function AuthProvider({ children }) {
     return (count ?? 0) < limit
   }
 
-  const value = {
-    user,
-    company,
-    role,
-    loading,
-    planExpired,
-    canWrite,
-    canDelete,
-    isAdmin,
-    isOwner,
-    signIn,
-    signUp,
-    signOut,
-    refreshCompany,
-    checkSubscriberLimit,
-  }
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={{
+      user, company, role, loading, planExpired,
+      canWrite, canDelete, isAdmin, isOwner,
+      signIn, signUp, signOut, refreshCompany, checkSubscriberLimit,
+    }}>
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export const useAuth = () => {
