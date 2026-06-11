@@ -1,59 +1,74 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { useAuth }  from '../context/AuthContext'
-import { toast }    from '../components/Toast'
-import { SkeletonStatGrid, SkeletonList } from '../components/Skeleton'
-import { calcDebt, buildPaidMap, fmt, moLabel, avatarColor, getCurMo, MO } from '../utils'
+import { useAuth } from '../context/AuthContext'
+import { toast } from '../components/Toast'
+import { calcDebt, buildPaidMap, fmt, avatarColor, getCurMo, MO } from '../utils'
 
 export default function Dashboard() {
   const { company, trialDaysLeft, isTrialActive, isViewer } = useAuth()
-  // التعديل هنا: حماية من الـ undefined في حال عدم وجود Context
-  const { setDebtCount } = useOutletContext() ?? {}
   const navigate = useNavigate()
 
-  const [subs, setSubs]       = useState([])
-  const [pays, setPays]       = useState([])
-  const [paidMap, setPaidMap] = useState({})
-  const [loading, setLoading] = useState(true)
-  const [search, setSearch]   = useState('')
-  const [results, setResults] = useState([])
-  const [showDrop, setShowDrop] = useState(false)
+  // ✅ الإصلاح: useOutletContext آمن لا يرمي error
+  const ctx = useOutletContext() ?? {}
+  const setDebtCount = ctx.setDebtCount ?? (() => {})
 
-  useEffect(() => { if (company) loadData() }, [company])
+  const [subs,     setSubs]     = useState([])
+  const [pays,     setPays]     = useState([])
+  const [paidMap,  setPaidMap]  = useState({})
+  const [loading,  setLoading]  = useState(true)
+  const [search,   setSearch]   = useState('')
+  const [results,  setResults]  = useState([])
+  const [showDrop, setShowDrop] = useState(false)
+  const [error,    setError]    = useState(null)
+
+  useEffect(() => {
+    if (company) loadData()
+  }, [company])
 
   async function loadData() {
     setLoading(true)
-    const [{ data: s, error: e1 }, { data: p, error: e2 }] = await Promise.all([
-      supabase.from('subscribers').select('*')
-        .eq('company_id', company.id).eq('is_active', true)
-        .order('created_at', { ascending: false }),
-      supabase.from('payments').select('*')
-        .eq('company_id', company.id)
-        .order('created_at', { ascending: false })
-    ])
-    if (e1 || e2) {
-      toast('خطأ في تحميل البيانات — تحقق من الاتصال', 'e')
-      setLoading(false); return
-    }
-    const pm = buildPaidMap(p || [])
-    setSubs(s || [])
-    setPays(p || [])
-    setPaidMap(pm)
-    const lateCount = (s || []).filter(sub => calcDebt(sub, pm[sub.id] || []).length > 0).length
-    
-    // التحقق من أن الدالة موجودة قبل استدعائها لمنع كراش التطبيق
-    if (typeof setDebtCount === 'function') {
-      setDebtCount(lateCount)
-    }
-    
-    setLoading(false)
+    setError(null)
+    try {
+      const [{ data: s, error: e1 }, { data: p, error: e2 }] = await Promise.all([
+        supabase.from('subscribers')
+          .select('*')
+          .eq('company_id', company.id)
+          .eq('is_active', true)
+          .order('created_at', { ascending: false }),
+        supabase.from('payments')
+          .select('*')
+          .eq('company_id', company.id)
+          .order('created_at', { ascending: false })
+      ])
 
-    if (!sessionStorage.getItem('np_notif_dash') && lateCount > 0) {
-      setTimeout(() => {
-        toast(`⚠️ ${lateCount} مشترك متأخر عن الدفع`, 'w', 5000)
-        sessionStorage.setItem('np_notif_dash', '1')
-      }, 2000)
+      if (e1) throw e1
+      if (e2) throw e2
+
+      const pm = buildPaidMap(p || [])
+      setSubs(s || [])
+      setPays(p || [])
+      setPaidMap(pm)
+
+      const lateCount = (s || []).filter(
+        sub => calcDebt(sub, pm[sub.id] || []).length > 0
+      ).length
+
+      // ✅ استدعاء آمن
+      setDebtCount(lateCount)
+
+      if (!sessionStorage.getItem('np_notif_dash') && lateCount > 0) {
+        setTimeout(() => {
+          toast(`⚠️ ${lateCount} مشترك متأخر عن الدفع`, 'w', 5000)
+          sessionStorage.setItem('np_notif_dash', '1')
+        }, 2000)
+      }
+    } catch (err) {
+      console.error('Dashboard loadData error:', err)
+      setError(err.message)
+      toast('خطأ في تحميل البيانات — ' + err.message, 'e')
+    } finally {
+      setLoading(false) // ✅ دائماً يُنفّذ حتى لو حصل error
     }
   }
 
@@ -61,18 +76,19 @@ export default function Dashboard() {
     setSearch(val)
     if (!val.trim()) { setResults([]); setShowDrop(false); return }
     const r = subs.filter(s =>
-      s.name.includes(val) || s.phone.includes(val))
+      s.name?.includes(val) || s.phone?.includes(val)
+    )
     setResults(r)
     setShowDrop(true)
   }
 
-  const curMo = getCurMo()
-  const late  = subs.filter(s => calcDebt(s, paidMap[s.id] || []).length > 0)
+  const curMo         = getCurMo()
+  const late          = subs.filter(s => calcDebt(s, paidMap[s.id] || []).length > 0)
   const totalDebt     = late.reduce((a, s) => a + calcDebt(s, paidMap[s.id] || []).length * s.monthly_fee, 0)
   const paidThisMo    = pays.filter(p => p.month === curMo).length
   const revenueThisMo = pays.filter(p => p.month === curMo).reduce((a, p) => a + Number(p.amount), 0)
 
-  // Last 6 months chart data
+  // آخر 6 أشهر للرسم البياني
   const now   = new Date()
   const last6 = []
   for (let i = 5; i >= 0; i--) {
@@ -83,23 +99,58 @@ export default function Dashboard() {
   }
   const maxRev = Math.max(...last6.map(m => m.rev), 1)
 
+  // ── إذا حصل خطأ ─────────────────────────────────────
+  if (error && !loading) {
+    return (
+      <div className="page">
+        <div style={{
+          background: 'rgba(225,29,72,.06)', border: '1px solid rgba(225,29,72,.2)',
+          borderRadius: 16, padding: '24px', textAlign: 'center', marginTop: 20
+        }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
+          <div style={{ fontWeight: 700, color: 'var(--rose)', marginBottom: 8 }}>
+            خطأ في تحميل البيانات
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--ink3)', marginBottom: 16 }}>
+            {error}
+          </div>
+          <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 24px' }}
+            onClick={loadData}>
+            🔄 إعادة المحاولة
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="page">
-      {/* Trial banner */}
+
+      {/* شريط التجربة المجانية */}
       {isTrialActive && (
         <div className="trial-strip fadeUp">
           <div className="trial-text">
             <h4>🎁 الفترة التجريبية المجانية</h4>
             <p>متبقي <strong>{trialDaysLeft}</strong> أيام — جميع الميزات مفعّلة</p>
           </div>
-          <button className="trial-btn" onClick={() => navigate('/pricing')}>
+          <button className="trial-btn" onClick={() => navigate('/subscribe')}>
             ترقية ✨
           </button>
         </div>
       )}
 
-      {/* Stats */}
-      {loading ? <SkeletonStatGrid /> : (
+      {/* ── إحصائيات ── */}
+      {loading ? (
+        <div className="stat-grid">
+          {[1,2,3,4].map(i => (
+            <div key={i} style={{
+              background: 'var(--sur)', border: '1px solid var(--bdr)',
+              borderRadius: 'var(--r3)', padding: 16, height: 110,
+              animation: 'shimmer 1.4s ease-in-out infinite'
+            }} />
+          ))}
+        </div>
+      ) : (
         <div className="stat-grid">
           <div className="stat-card fadeUp d1">
             <div className="stat-icon si-1">👥</div>
@@ -132,7 +183,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Revenue chart */}
+      {/* ── رسم بياني ── */}
       {!loading && pays.length > 0 && (
         <div className="card fadeUp d3" style={{ marginBottom: 14 }}>
           <div className="card-body" style={{ padding: '14px 14px 10px' }}>
@@ -141,7 +192,7 @@ export default function Dashboard() {
             </div>
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 80 }}>
               {last6.map((m, i) => {
-                const h = Math.max(4, Math.round(m.rev / maxRev * 64))
+                const h     = Math.max(4, Math.round(m.rev / maxRev * 64))
                 const isCur = m.key === curMo
                 return (
                   <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
@@ -149,13 +200,15 @@ export default function Dashboard() {
                       {m.rev > 0 ? Math.round(m.rev / 1000) + 'k' : ''}
                     </div>
                     <div style={{
-                      width: '100%', height: h, borderRadius: '5px 5px 3px 3px',
+                      width: '100%', height: h,
+                      borderRadius: '5px 5px 3px 3px',
                       background: isCur ? 'var(--gP)' : 'rgba(26,63,219,.2)',
                       boxShadow: isCur ? '0 3px 10px rgba(26,63,219,.3)' : 'none',
                       transition: 'height .5s'
                     }} />
                     <div style={{
-                      fontSize: 9, fontWeight: isCur ? 800 : 600,
+                      fontSize: 9,
+                      fontWeight: isCur ? 800 : 600,
                       color: isCur ? 'var(--blue)' : 'var(--ink3)'
                     }}>{m.label}</div>
                   </div>
@@ -166,7 +219,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Quick actions */}
+      {/* ── أزرار سريعة ── */}
       <div className="quick-grid fadeUp d3">
         {!isViewer && (
           <button className="btn btn-primary"
@@ -179,7 +232,7 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Search */}
+      {/* ── البحث ── */}
       <div className="search-wrap fadeUp d4" style={{ position: 'relative' }}>
         <span className="search-icon">🔍</span>
         <input
@@ -191,7 +244,8 @@ export default function Dashboard() {
           onBlur={() => setTimeout(() => setShowDrop(false), 180)}
         />
         {search && (
-          <button className="search-clear" onClick={() => { setSearch(''); setResults([]); setShowDrop(false) }}>✕</button>
+          <button className="search-clear"
+            onClick={() => { setSearch(''); setResults([]); setShowDrop(false) }}>✕</button>
         )}
         {showDrop && (
           <div className="search-dropdown open">
@@ -219,13 +273,24 @@ export default function Dashboard() {
         )}
       </div>
 
-      {/* Recent subscribers */}
+      {/* ── آخر المشتركين ── */}
       <div className="sec-header fadeUp d5">
         <div className="sec-title">📋 آخر المشتركين</div>
         <button className="sec-link" onClick={() => navigate('/subscribers')}>عرض الكل →</button>
       </div>
 
-      {loading ? <SkeletonList count={4} /> : (
+      {loading ? (
+        <div>
+          {[1,2,3].map(i => (
+            <div key={i} style={{
+              background: 'var(--sur)', border: '1px solid var(--bdr)',
+              borderRadius: 'var(--r2)', padding: '13px 15px',
+              marginBottom: 9, height: 70,
+              animation: 'shimmer 1.4s ease-in-out infinite'
+            }} />
+          ))}
+        </div>
+      ) : (
         <div className="fadeUp d6">
           {subs.length === 0 ? (
             <div className="empty-state">
@@ -240,7 +305,7 @@ export default function Dashboard() {
               <div key={sub.id} className="sub-row"
                 onClick={() => navigate(`/subscribers/${sub.id}`)}>
                 <div className="sub-avatar" style={{ background: `${color}22`, color }}>
-                  {sub.name[0]}
+                  {sub.name?.[0] ?? '?'}
                 </div>
                 <div className="sub-info">
                   <div className="sub-name">{sub.name}</div>
