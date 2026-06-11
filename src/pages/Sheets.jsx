@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { supabase }  from '../lib/supabase'
-import { useAuth }   from '../context/AuthContext'
-import { toast }     from '../components/Toast'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../context/AuthContext'
+import { toast } from '../components/Toast'
 import { useOutletContext } from 'react-router-dom'
 import { calcDebt, buildPaidMap, moLabel } from '../utils'
 
@@ -36,20 +36,22 @@ function out(o){
 
 export default function Sheets() {
   const { company } = useAuth()
-  const { setGsConnected } = useOutletContext()
+  // جلب setGsConnected من Layout عبر Outlet context
+  const ctx = useOutletContext() ?? {}
+  const setGsConnected = ctx.setGsConnected ?? (() => {})
 
-  const [config, setConfig]     = useState({ web_app_url: '', sheet_name: 'Sheet1' })
+  const [config, setConfig]       = useState({ web_app_url: '', sheet_name: 'Sheet1' })
   const [connected, setConnected] = useState(false)
   const [lastSync, setLastSync]   = useState(null)
   const [loading, setLoading]     = useState(false)
-  const [previewData, setPreviewData] = useState(null)
 
   useEffect(() => { if (company) loadConfig() }, [company])
 
   async function loadConfig() {
     const { data } = await supabase
       .from('sheets_config').select('*')
-      .eq('company_id', company.id).single()
+      .eq('company_id', company.id)
+      .maybeSingle()
     if (data) {
       setConfig({ web_app_url: data.web_app_url || '', sheet_name: data.sheet_name || 'Sheet1' })
       setConnected(data.is_connected || false)
@@ -64,9 +66,9 @@ export default function Sheets() {
     try {
       await fetch(config.web_app_url, { method: 'GET', mode: 'no-cors' })
       const { error } = await supabase.from('sheets_config').upsert({
-        company_id: company.id,
-        web_app_url: config.web_app_url,
-        sheet_name: config.sheet_name || 'Sheet1',
+        company_id:   company.id,
+        web_app_url:  config.web_app_url,
+        sheet_name:   config.sheet_name || 'Sheet1',
         is_connected: true
       }, { onConflict: 'company_id' })
       if (error) throw error
@@ -108,9 +110,14 @@ export default function Sheets() {
   }
 
   async function clearConfig() {
-    await supabase.from('sheets_config').upsert({ company_id: company.id, web_app_url: '', is_connected: false }, { onConflict: 'company_id' })
+    await supabase.from('sheets_config').upsert(
+      { company_id: company.id, web_app_url: '', is_connected: false },
+      { onConflict: 'company_id' }
+    )
     setConfig({ web_app_url: '', sheet_name: 'Sheet1' })
-    setConnected(false); setGsConnected(false); setLastSync(null); setPreviewData(null)
+    setConnected(false)
+    setGsConnected(false)
+    setLastSync(null)
     toast('تم مسح إعدادات Google Sheets', 'i')
   }
 
@@ -127,7 +134,7 @@ export default function Sheets() {
         زامن بياناتك مع جداول Google ورفع المشتركين تلقائياً
       </p>
 
-      {/* Connection status */}
+      {/* حالة الاتصال */}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
@@ -140,7 +147,11 @@ export default function Sheets() {
                 </div>
               </div>
             </div>
-            <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 20, background: connected ? 'rgba(5,150,105,.1)' : 'var(--bg2)', color: connected ? '#059669' : 'var(--ink3)' }}>
+            <span style={{
+              fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 20,
+              background: connected ? 'rgba(5,150,105,.1)' : 'var(--bg2)',
+              color: connected ? '#059669' : 'var(--ink3)'
+            }}>
               {connected ? '✅ متصل' : '⭕ غير متصل'}
             </span>
           </div>
@@ -153,7 +164,7 @@ export default function Sheets() {
         </div>
       </div>
 
-      {/* Setup steps */}
+      {/* خطوات الإعداد */}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
           <div className="card-title" style={{ marginBottom: 14 }}>📋 خطوات الإعداد</div>
@@ -209,9 +220,17 @@ export default function Sheets() {
                 </div>
               )
             }
-          ].map(step => (
-            <div key={step.n} style={{ display: 'flex', gap: 12, padding: '12px 0', borderBottom: step.n < 3 ? '1px solid var(--bdr)' : 'none' }}>
-              <div style={{ width: 28, height: 28, borderRadius: '50%', flexShrink: 0, background: 'linear-gradient(135deg,#1a3fdb,#6144f5)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 900 }}>{step.n}</div>
+          ].map((step, i) => (
+            <div key={step.n} style={{
+              display: 'flex', gap: 12, padding: '12px 0',
+              borderBottom: i < 2 ? '1px solid var(--bdr)' : 'none'
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
+                background: 'linear-gradient(135deg,#1a3fdb,#6144f5)',
+                color: '#fff', display: 'flex', alignItems: 'center',
+                justifyContent: 'center', fontSize: 13, fontWeight: 900
+              }}>{step.n}</div>
               <div style={{ flex: 1 }}>
                 <h4 style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)', marginBottom: 4 }}>{step.title}</h4>
                 {step.body}
@@ -221,7 +240,7 @@ export default function Sheets() {
         </div>
       </div>
 
-      {/* Sync */}
+      {/* مزامنة */}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="card-body">
           <div className="card-title" style={{ marginBottom: 12 }}>🔄 مزامنة البيانات</div>
