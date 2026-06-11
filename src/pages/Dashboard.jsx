@@ -8,7 +8,8 @@ import { calcDebt, buildPaidMap, fmt, moLabel, avatarColor, getCurMo, MO } from 
 
 export default function Dashboard() {
   const { company, trialDaysLeft, isTrialActive, isViewer } = useAuth()
-  const { setDebtCount } = useOutletContext()
+  // التعديل هنا: حماية من الـ undefined في حال عدم وجود Context
+  const { setDebtCount } = useOutletContext() ?? {}
   const navigate = useNavigate()
 
   const [subs, setSubs]       = useState([])
@@ -40,7 +41,12 @@ export default function Dashboard() {
     setPays(p || [])
     setPaidMap(pm)
     const lateCount = (s || []).filter(sub => calcDebt(sub, pm[sub.id] || []).length > 0).length
-    setDebtCount(lateCount)
+    
+    // التحقق من أن الدالة موجودة قبل استدعائها لمنع كراش التطبيق
+    if (typeof setDebtCount === 'function') {
+      setDebtCount(lateCount)
+    }
+    
     setLoading(false)
 
     if (!sessionStorage.getItem('np_notif_dash') && lateCount > 0) {
