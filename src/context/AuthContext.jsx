@@ -6,23 +6,26 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user,        setUser]        = useState(null)
   const [company,     setCompany]     = useState(null)
-  const [accountant,  setAccountant]  = useState(null) // بيانات المحاسب الفرعي
+  const [accountant,  setAccountant]  = useState(null)
   const [role,        setRole]        = useState(null)
   const [loading,     setLoading]     = useState(true)
   const [planExpired, setPlanExpired] = useState(false)
 
   const loadCompany = useCallback(async (authUser) => {
     if (!authUser) {
-      setCompany(null); setRole(null); setAccountant(null); setPlanExpired(false)
+      setCompany(null); setRole(null); setAccountant(null)
+      setPlanExpired(false); setLoading(false)
       return
     }
     try {
       // هل هو مالك شركة؟
-      const { data: ownRows } = await supabase
+      const { data: ownRows, error: e1 } = await supabase
         .from('companies')
         .select('*')
         .eq('owner_id', authUser.id)
         .limit(1)
+
+      if (e1) throw e1
 
       if (ownRows && ownRows.length > 0) {
         const c = ownRows[0]
@@ -30,30 +33,34 @@ export function AuthProvider({ children }) {
         setAccountant(null)
         setRole(c.is_admin ? 'admin' : 'owner')
         checkExpiry(c)
+        setLoading(false)
         return
       }
 
       // هل هو محاسب فرعي؟
-      const { data: subRows } = await supabase
+      const { data: subRows, error: e2 } = await supabase
         .from('sub_accountants')
         .select('*, companies(*)')
         .eq('auth_user_id', authUser.id)
         .eq('is_active', true)
         .limit(1)
 
-      if (subRows && subRows.length > 0 && subRows[0].companies) {
+      if (!e2 && subRows && subRows.length > 0 && subRows[0].companies) {
         const sub = subRows[0]
         setCompany(sub.companies)
         setAccountant(sub)
         setRole(sub.role === 'viewer' ? 'viewer' : 'accountant')
         checkExpiry(sub.companies)
-        return
+      } else {
+        setCompany(null)
+        setRole(null)
+        setAccountant(null)
       }
-
-      setCompany(null); setRole(null); setAccountant(null)
     } catch (err) {
-      console.error('loadCompany:', err.message)
+      console.error('loadCompany error:', err.message)
       setCompany(null); setRole(null); setAccountant(null)
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -76,7 +83,7 @@ export function AuthProvider({ children }) {
       if (!mounted) return
       const u = session?.user ?? null
       setUser(u)
-      loadCompany(u).finally(() => { if (mounted) setLoading(false) })
+      loadCompany(u)
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -89,8 +96,7 @@ export function AuthProvider({ children }) {
           setPlanExpired(false); setLoading(false)
           return
         }
-        await loadCompany(u)
-        if (mounted) setLoading(false)
+        loadCompany(u)
       }
     )
 
@@ -113,6 +119,7 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
+    setLoading(true)
     await supabase.auth.signOut()
   }
 
@@ -120,7 +127,6 @@ export function AuthProvider({ children }) {
     if (user) await loadCompany(user)
   }
 
-  // حساب أيام التجربة المتبقية
   const trialDaysLeft = (() => {
     if (!company || company.plan !== 'trial' || !company.trial_end) return 0
     const diff = new Date(company.trial_end) - new Date()
@@ -128,8 +134,6 @@ export function AuthProvider({ children }) {
   })()
 
   const isTrialActive = company?.plan === 'trial' && trialDaysLeft > 0
-
-  // الصلاحيات — متوافقة مع الكود الأصلي
   const isViewer  = role === 'viewer'
   const isAdmin   = role === 'admin'
   const isOwner   = role === 'owner'
