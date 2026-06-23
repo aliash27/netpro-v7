@@ -1,298 +1,153 @@
-import { useState, useEffect } from 'react'
-import { useNavigate, useOutletContext } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext'
-import { toast } from '../components/Toast'
-import { calcDebt, buildPaidMap, fmt, avatarColor, getCurMo, MO } from '../utils'
+import { supabase } from '../lib/supabase'
 
 export default function Dashboard() {
-  const { company, loading: authLoading, trialDaysLeft, isTrialActive, isViewer } = useAuth()
-  const navigate = useNavigate()
-
-  // ✅ آمن 100% - لا يرمي error حتى لو context فارغ
-  const ctx = useOutletContext() ?? {}
-  const setDebtCount = ctx.setDebtCount ?? (() => {})
-
-  const [subs,     setSubs]     = useState([])
-  const [pays,     setPays]     = useState([])
-  const [paidMap,  setPaidMap]  = useState({})
-  const [loading,  setLoading]  = useState(false)
-  const [search,   setSearch]   = useState('')
-  const [results,  setResults]  = useState([])
-  const [showDrop, setShowDrop] = useState(false)
-  const [errMsg,   setErrMsg]   = useState(null)
+  const { company, isSuperAdmin } = useAuth()
+  const [stats, setStats] = useState({
+    totalSubscribers: 0,
+    activeSubscribers: 0,
+    totalDebts: 0,
+    collectedPayments: 0
+  })
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // انتظر حتى ينتهي تحميل Auth
-    if (authLoading) return
-    // إذا يوجد شركة، حمّل البيانات
-    if (company?.id) {
-      loadData()
-    }
-  }, [company, authLoading])
-
-  async function loadData() {
-    setLoading(true)
-    setErrMsg(null)
-    try {
-      const [{ data: s, error: e1 }, { data: p, error: e2 }] = await Promise.all([
-        supabase
-          .from('subscribers')
-          .select('*')
-          .eq('company_id', company.id)
-          .eq('is_active', true)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('payments')
-          .select('*')
-          .eq('company_id', company.id)
-          .order('created_at', { ascending: false })
-      ])
-
-      if (e1) throw e1
-      if (e2) throw e2
-
-      const pm = buildPaidMap(p || [])
-      setSubs(s || [])
-      setPays(p || [])
-      setPaidMap(pm)
-
-      const lateCount = (s || []).filter(
-        sub => calcDebt(sub, pm[sub.id] || []).length > 0
-      ).length
-      setDebtCount(lateCount)
-
-      if (!sessionStorage.getItem('np_notif') && lateCount > 0) {
-        setTimeout(() => {
-          toast(`⚠️ ${lateCount} مشترك متأخر عن الدفع`, 'w', 5000)
-          sessionStorage.setItem('np_notif', '1')
-        }, 1500)
+    async function fetchDashboardData() {
+      if (!company?.id && !isSuperAdmin) {
+        setLoading(false)
+        return
       }
-    } catch (err) {
-      console.error('Dashboard error:', err)
-      setErrMsg(err.message)
-    } finally {
-      // ✅ دائماً يُنهي التحميل حتى لو حصل خطأ
-      setLoading(false)
+
+      try {
+        setLoading(true)
+        
+        // بناء الاستعلام بناءً على هوية المستخدم (سوبر أدمن يرى كل شيء، أو عزل بحسب الشركة)
+        let subQuery = supabase.from('subscribers').select('id, is_active', { count: 'exact' })
+        let debtQuery = supabase.from('debts').select('amount')
+        let paymentQuery = supabase.from('payments').select('amount')
+
+        if (!isSuperAdmin) {
+          subQuery = subQuery.eq('company_id', company.id)
+          debtQuery = debtQuery.eq('company_id', company.id)
+          paymentQuery = paymentQuery.eq('company_id', company.id)
+        }
+
+        const [subsRes, debtsRes, paymentsRes] = await Promise.all([
+          subQuery,
+          debtQuery,
+          paymentQuery
+        ])
+
+        // حساب إحصائيات المشتركين
+        const totalSubs = subsRes.count ?? 0
+        const activeSubs = subsRes.data?.filter(s => s.is_active).length ?? 0
+
+        // حساب إجمالي الديون
+        const totalDebtsSum = debtsRes.data?.reduce((sum, d) => sum + (d.amount || 0), 0) ?? 0
+
+        // حساب المبالغ المحصلة
+        const totalPaymentsSum = paymentsRes.data?.reduce((sum, p) => sum + (p.amount || 0), 0) ?? 0
+
+        setStats({
+          totalSubscribers: totalSubs,
+          activeSubscribers: activeSubs,
+          totalDebts: totalDebtsSum,
+          collectedPayments: totalPaymentsSum
+        })
+      } catch (error) {
+        console.error('Error loading dashboard stats:', error)
+      } finally {
+        setLoading(false)
+      }
     }
+
+    fetchDashboardData()
+  }, [company?.id, isSuperAdmin])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-slate-400 animate-pulse text-lg">جاري تحميل الإحصائيات...</div>
+      </div>
+    )
   }
-
-  function doSearch(val) {
-    setSearch(val)
-    if (!val.trim()) { setResults([]); setShowDrop(false); return }
-    setResults(subs.filter(s => s.name?.includes(val) || s.phone?.includes(val)))
-    setShowDrop(true)
-  }
-
-  const curMo         = getCurMo()
-  const late          = subs.filter(s => calcDebt(s, paidMap[s.id] || []).length > 0)
-  const totalDebt     = late.reduce((a, s) => a + calcDebt(s, paidMap[s.id] || []).length * s.monthly_fee, 0)
-  const revenueThisMo = pays.filter(p => p.month === curMo).reduce((a, p) => a + Number(p.amount), 0)
-  const paidThisMo    = pays.filter(p => p.month === curMo).length
-
-  const now   = new Date()
-  const last6 = Array.from({ length: 6 }, (_, i) => {
-    const d   = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    return { key, label: MO[d.getMonth()].slice(0, 3), rev: pays.filter(p => p.month === key).reduce((a, p) => a + Number(p.amount), 0) }
-  })
-  const maxRev = Math.max(...last6.map(m => m.rev), 1)
-
-  // Auth لازال يحمّل
-  if (authLoading) return (
-    <div className="page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
-      <div style={{ textAlign: 'center', color: 'var(--ink3)' }}>
-        <div style={{ fontSize: 36, marginBottom: 8, animation: 'float 2s ease-in-out infinite' }}>📡</div>
-        <div>جاري تحميل الحساب...</div>
-      </div>
-    </div>
-  )
-
-  // لا يوجد شركة
-  if (!company) return (
-    <div className="page">
-      <div className="empty-state">
-        <div className="empty-art">🏢</div>
-        <div className="empty-title">لا يوجد حساب مرتبط</div>
-        <div className="empty-sub">تواصل مع الدعم الفني</div>
-      </div>
-    </div>
-  )
-
-  // حصل خطأ
-  if (errMsg) return (
-    <div className="page">
-      <div style={{ background: 'rgba(225,29,72,.06)', border: '1px solid rgba(225,29,72,.2)', borderRadius: 16, padding: 24, textAlign: 'center', marginTop: 20 }}>
-        <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
-        <div style={{ fontWeight: 700, color: 'var(--rose)', marginBottom: 8 }}>خطأ في تحميل البيانات</div>
-        <div style={{ fontSize: 12, color: 'var(--ink3)', marginBottom: 16, fontFamily: 'monospace', background: 'var(--bg2)', padding: 8, borderRadius: 8 }}>
-          {errMsg}
-        </div>
-        <button className="btn btn-primary" style={{ width: 'auto', padding: '10px 24px' }} onClick={loadData}>
-          🔄 إعادة المحاولة
-        </button>
-      </div>
-    </div>
-  )
 
   return (
-    <div className="page">
-
-      {/* شريط التجربة */}
-      {isTrialActive && (
-        <div className="trial-strip fadeUp">
-          <div className="trial-text">
-            <h4>🎁 الفترة التجريبية المجانية</h4>
-            <p>متبقي <strong>{trialDaysLeft}</strong> أيام</p>
-          </div>
-          <button className="trial-btn" onClick={() => navigate('/subscribe')}>ترقية ✨</button>
-        </div>
-      )}
-
-      {/* ── الإحصائيات ── */}
-      {loading ? (
-        <div className="stat-grid">
-          {[1,2,3,4].map(i => (
-            <div key={i} style={{ background: 'var(--sur)', border: '1px solid var(--bdr)', borderRadius: 'var(--r3)', padding: 16, height: 110, animation: 'shimmer 1.4s ease-in-out infinite' }} />
-          ))}
-        </div>
-      ) : (
-        <div className="stat-grid">
-          <div className="stat-card fadeUp d1">
-            <div className="stat-icon si-1">👥</div>
-            <div className="stat-label">إجمالي المشتركين</div>
-            <div className="stat-value">{subs.length}</div>
-            <div className="stat-trend">{subs.length} مشترك نشط</div>
-          </div>
-          <div className="stat-card fadeUp d2">
-            <div className="stat-icon si-2">⚠️</div>
-            <div className="stat-label">المتأخرون</div>
-            <div className="stat-value warn">{late.length}</div>
-            <div className="stat-trend">
-              {subs.length ? Math.round(late.length / subs.length * 100) : 0}% من الكل
-            </div>
-          </div>
-          <div className="stat-card fadeUp d3">
-            <div className="stat-icon si-3">💰</div>
-            <div className="stat-label">إجمالي الديون</div>
-            <div className="stat-value danger" style={{ fontSize: 'clamp(11px,3vw,19px)' }}>
-              {late.length ? fmt(totalDebt) : 'لا ديون 🎉'}
-            </div>
-          </div>
-          <div className="stat-card fadeUp d4">
-            <div className="stat-icon si-4">💵</div>
-            <div className="stat-label">إيرادات هذا الشهر</div>
-            <div className="stat-value ok" style={{ fontSize: 'clamp(10px,2.5vw,16px)' }}>
-              {revenueThisMo ? fmt(revenueThisMo) : `${paidThisMo} دفعة`}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── رسم بياني ── */}
-      {!loading && pays.length > 0 && (
-        <div className="card fadeUp d3" style={{ marginBottom: 14 }}>
-          <div className="card-body" style={{ padding: '14px 14px 10px' }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--ink)', marginBottom: 12 }}>📈 إيرادات آخر 6 أشهر</div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 80 }}>
-              {last6.map((m, i) => {
-                const h = Math.max(4, Math.round(m.rev / maxRev * 64))
-                const isCur = m.key === curMo
-                return (
-                  <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-                    <div style={{ fontSize: 9, color: 'var(--ink3)', fontWeight: 700 }}>{m.rev > 0 ? Math.round(m.rev / 1000) + 'k' : ''}</div>
-                    <div style={{ width: '100%', height: h, borderRadius: '5px 5px 2px 2px', background: isCur ? 'var(--gP)' : 'rgba(26,63,219,.18)', boxShadow: isCur ? '0 3px 10px rgba(26,63,219,.3)' : 'none', transition: 'height .5s' }} />
-                    <div style={{ fontSize: 9, fontWeight: isCur ? 800 : 600, color: isCur ? 'var(--blue)' : 'var(--ink3)' }}>{m.label}</div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── أزرار ── */}
-      <div className="quick-grid fadeUp d3">
-        {!isViewer && (
-          <button className="btn btn-primary" onClick={() => navigate('/subscribers', { state: { openAdd: true } })}>
-            ➕ إضافة مشترك
-          </button>
-        )}
-        <button className="btn btn-whatsapp" onClick={() => navigate('/debts')}>
-          📨 مراسلة المتأخرين
-        </button>
+    <div className="p-6 space-y-6 max-w-7xl mx-auto text-right" dir="rtl">
+      {/* العناوين الرئيسية */}
+      <div>
+        <h1 className="text-2xl font-bold text-white">لوحة الإحصائيات والتحليل</h1>
+        <p className="text-sm text-slate-400 mt-1">
+          {isSuperAdmin ? 'عرض البيانات الشاملة للنظام (Super Admin)' : `مرحباً بك في لوحة تحكم: ${company?.name || 'الشركة'}`}
+        </p>
       </div>
 
-      {/* ── البحث ── */}
-      <div className="search-wrap fadeUp d4" style={{ position: 'relative' }}>
-        <span className="search-icon">🔍</span>
-        <input className="search-input" placeholder="ابحث عن مشترك بالاسم أو الهاتف..."
-          value={search} onChange={e => doSearch(e.target.value)}
-          onFocus={() => results.length && setShowDrop(true)}
-          onBlur={() => setTimeout(() => setShowDrop(false), 180)} />
-        {search && <button className="search-clear" onClick={() => { setSearch(''); setResults([]); setShowDrop(false) }}>✕</button>}
-        {showDrop && (
-          <div className="search-dropdown open">
-            {results.length === 0
-              ? <div className="search-item">لا توجد نتائج</div>
-              : results.map(s => {
-                  const d = calcDebt(s, paidMap[s.id] || [])
-                  return (
-                    <div key={s.id} className="search-item" onMouseDown={() => { navigate(`/subscribers/${s.id}`); setSearch(''); setShowDrop(false) }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: 13 }}>{s.name}</div>
-                        <div style={{ fontSize: 12, color: 'var(--ink3)' }}>{s.phone}</div>
-                      </div>
-                      <span className={`badge ${d.length ? 'badge-warn' : 'badge-ok'}`}>
-                        {d.length ? `⚠️ ${d.length}` : '✅'}
-                      </span>
-                    </div>
-                  )
-                })
-            }
+      {/* بطاقات الإحصائيات السريعة KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="text-sm font-medium text-slate-400">إجمالي المشتركين</div>
+          <div className="text-3xl font-bold text-white mt-2">{stats.totalSubscribers}</div>
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="text-sm font-medium text-emerald-400">المشتركين النشطين</div>
+          <div className="text-3xl font-bold text-emerald-400 mt-2">{stats.activeSubscribers}</div>
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="text-sm font-medium text-rose-400">إجمالي الديون المتبقية</div>
+          <div className="text-3xl font-bold text-rose-400 mt-2">
+            {stats.totalDebts.toLocaleString()} د.ع
           </div>
-        )}
+        </div>
+
+        <div className="bg-slate-800/50 border border-slate-700/60 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="text-sm font-medium text-blue-400">المبالغ المحصلة</div>
+          <div className="text-3xl font-bold text-blue-400 mt-2">
+            {stats.collectedPayments.toLocaleString()} د.ع
+          </div>
+        </div>
       </div>
 
-      {/* ── آخر المشتركين ── */}
-      <div className="sec-header fadeUp d5">
-        <div className="sec-title">📋 آخر المشتركين</div>
-        <button className="sec-link" onClick={() => navigate('/subscribers')}>عرض الكل →</button>
-      </div>
+      {/* قسـم الرسوم البيانية التوضيحية البسيطة */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-slate-800/40 border border-slate-700/50 rounded-2xl p-6">
+          <h3 className="text-md font-semibold text-white mb-4">نسبة حالة المشتركين</h3>
+          <div className="w-full bg-slate-700 h-4 rounded-full overflow-hidden flex">
+            <div 
+              style={{ width: `${stats.totalSubscribers ? (stats.activeSubscribers / stats.totalSubscribers) * 100 : 0}%` }} 
+              className="bg-emerald-500 h-full"
+            />
+            <div 
+              style={{ width: `${stats.totalSubscribers ? ((stats.totalSubscribers - stats.activeSubscribers) / stats.totalSubscribers) * 100 : 0}%` }} 
+              className="bg-slate-600 h-full"
+            />
+          </div>
+          <div className="flex justify-between text-xs text-slate-400 mt-2">
+            <span>نشط ({stats.activeSubscribers})</span>
+            <span>غير نشط ({stats.totalSubscribers - stats.activeSubscribers})</span>
+          </div>
+        </div>
 
-      {loading ? (
-        [1,2,3].map(i => (
-          <div key={i} style={{ background: 'var(--sur)', border: '1px solid var(--bdr)', borderRadius: 'var(--r2)', padding: '13px 15px', marginBottom: 9, height: 66, animation: 'shimmer 1.4s ease-in-out infinite' }} />
-        ))
-      ) : subs.length === 0 ? (
-        <div className="empty-state fadeUp d6">
-          <div className="empty-art">📭</div>
-          <div className="empty-title">لا يوجد مشتركون بعد</div>
-          <div className="empty-sub">اضغط ➕ لإضافة أول مشترك</div>
+        <div className="bg-slate-800/40 border border-slate-700/50 rounded-2xl p-6">
+          <h3 className="text-md font-semibold text-white mb-4">التحصيل المالي ضد الديون</h3>
+          <div className="w-full bg-slate-700 h-4 rounded-full overflow-hidden flex">
+            <div 
+              style={{ width: `${(stats.collectedPayments + stats.totalDebts) ? (stats.collectedPayments / (stats.collectedPayments + stats.totalDebts)) * 100 : 0}%` }} 
+              className="bg-blue-500 h-full"
+            />
+            <div 
+              style={{ width: `${(stats.collectedPayments + stats.totalDebts) ? (stats.totalDebts / (stats.collectedPayments + stats.totalDebts)) * 100 : 0}%` }} 
+              className="bg-rose-500 h-full"
+            />
+          </div>
+          <div className="flex justify-between text-xs text-slate-400 mt-2">
+            <span>تم تحصيله ({stats.collectedPayments.toLocaleString()} د.ع)</span>
+            <span>ديون متبقية ({stats.totalDebts.toLocaleString()} د.ع)</span>
+          </div>
         </div>
-      ) : (
-        <div className="fadeUp d6">
-          {subs.slice(0, 5).map(sub => {
-            const d     = calcDebt(sub, paidMap[sub.id] || [])
-            const color = avatarColor(sub.name)
-            return (
-              <div key={sub.id} className="sub-row" onClick={() => navigate(`/subscribers/${sub.id}`)}>
-                <div className="sub-avatar" style={{ background: `${color}22`, color }}>{sub.name?.[0] ?? '?'}</div>
-                <div className="sub-info">
-                  <div className="sub-name">{sub.name}</div>
-                  <div className="sub-phone">{sub.phone}</div>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
-                  <span className={`badge ${d.length ? 'badge-warn' : 'badge-ok'}`}>
-                    {d.length ? `⚠️ ${d.length} شهر` : '✅ مدفوع'}
-                  </span>
-                  <span style={{ fontSize: 11, color: 'var(--ink3)' }}>{fmt(sub.monthly_fee)}</span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
+      </div>
     </div>
   )
 }
