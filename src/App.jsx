@@ -1,4 +1,3 @@
-// src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { Suspense, lazy } from 'react'
@@ -19,47 +18,46 @@ const Accountants      = lazy(() => import('./pages/Accountants'))
 const SubscribePlan    = lazy(() => import('./pages/SubscribePlan'))
 const AdminDashboard   = lazy(() => import('./pages/admin/AdminDashboard'))
 
-// ── Shared loading screen ──────────────────────────────────────
-function SimpleLoading() {
+// ── Loading screen ─────────────────────────────────────────────
+function FullPageLoader() {
   return (
     <div style={{
-      minHeight: '100vh',
-      background: '#0f172a',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 16,
-      fontFamily: 'system-ui, sans-serif',
+      minHeight: '100vh', background: '#0f172a',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      gap: 18, fontFamily: 'system-ui, sans-serif',
     }}>
-      <div style={{ fontSize: 48 }}>📡</div>
-      <div style={{ fontSize: 20, fontWeight: 800, color: '#fff' }}>نيت برو</div>
+      <div style={{ fontSize: 52 }}>📡</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>نيت برو</div>
       <div style={{ fontSize: 13, color: '#64748b' }}>جاري التحميل...</div>
       <div style={{
-        width: 200, height: 4,
-        background: '#1e293b',
-        borderRadius: 4,
-        overflow: 'hidden',
+        width: 200, height: 3, background: '#1e293b',
+        borderRadius: 4, overflow: 'hidden',
       }}>
         <div style={{
-          width: '60%', height: '100%',
+          width: '55%', height: '100%',
           background: 'linear-gradient(90deg,#3b82f6,#8b5cf6)',
           borderRadius: 4,
-          animation: 'slide 1.5s ease-in-out infinite',
+          animation: 'npSlide 1.4s ease-in-out infinite',
         }} />
       </div>
-      <style>{`@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}`}</style>
+      <style>{`
+        @keyframes npSlide {
+          0%   { transform: translateX(-180%); }
+          100% { transform: translateX(420%);  }
+        }
+      `}</style>
     </div>
   )
 }
 
-// ── Root app ───────────────────────────────────────────────────
+// ── Root ───────────────────────────────────────────────────────
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <ToastContainer />
-        <Suspense fallback={<SimpleLoading />}>
+        <Suspense fallback={<FullPageLoader />}>
           <AppRoutes />
         </Suspense>
       </AuthProvider>
@@ -71,14 +69,14 @@ export default function App() {
 function AppRoutes() {
   const { loading, user, isSuperAdmin } = useAuth()
 
-  // Wait for Supabase session + company row to resolve before
-  // making ANY routing decision — prevents false redirects.
-  if (loading) return <SimpleLoading />
+  // ── CRITICAL: never make a routing decision while auth is loading ──
+  // This single guard eliminates all false "no company" redirects.
+  if (loading) return <FullPageLoader />
 
   return (
     <Routes>
 
-      {/* ── Public: Login ── */}
+      {/* Public */}
       <Route
         path="/login"
         element={
@@ -90,68 +88,67 @@ function AppRoutes() {
         }
       />
 
-      {/* ── Super-Admin panel ──
-           /admin   → AdminDashboard
-           /admin/* → also AdminDashboard (internal tabs handle sub-routes)
+      {/* ── Super-Admin panel ──────────────────────────────────
+          Guard: must be logged in AND isSuperAdmin must be true.
+          Any other logged-in user gets bounced to /dashboard.
       ── */}
       <Route
         path="/admin"
         element={
-          !user       ? <Navigate to="/login" replace /> :
+          !user         ? <Navigate to="/login"     replace /> :
           !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
           <AdminDashboard />
         }
       />
-      {/* Catch any /admin/... deep links and send them to the same dashboard */}
       <Route
         path="/admin/*"
         element={
-          !user         ? <Navigate to="/login" replace /> :
+          !user         ? <Navigate to="/login"     replace /> :
           !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
           <AdminDashboard />
         }
       />
 
-      {/* ── Authenticated user routes (owner / accountant / viewer) ──
-           Super-admins are NOT allowed here — they go to /admin.
-           This prevents an admin accidentally landing on the regular UI.
+      {/* ── Normal user routes ─────────────────────────────────
+          Guard: must be logged in AND must NOT be super-admin.
+          Super-admins are always redirected to /admin.
       ── */}
       <Route
         element={
-          !user       ? <Navigate to="/login"   replace /> :
-          isSuperAdmin ? <Navigate to="/admin"   replace /> :
+          !user        ? <Navigate to="/login" replace /> :
+          isSuperAdmin ? <Navigate to="/admin" replace /> :
           <Layout />
         }
       >
-        <Route path="/dashboard"               element={<Dashboard />} />
-        <Route path="/subscribers"             element={<Subscribers />} />
-        <Route path="/subscribers/:id"         element={<SubscriberDetail />} />
-        <Route path="/debts"                   element={<Debts />} />
-        <Route path="/payments"                element={<Payments />} />
-        <Route path="/reports"                 element={<Reports />} />
-        <Route path="/sheets"                  element={<Sheets />} />
-        <Route path="/accountants"             element={<Accountants />} />
-        <Route path="/settings"                element={<Settings />} />
-        <Route path="/subscribe"               element={<SubscribePlan />} />
-        <Route path="/subscribe/:plan"         element={<SubscribePlan />} />
-        <Route path="/pricing"                 element={<SubscribePlan />} />
+        <Route path="/dashboard"           element={<Dashboard />} />
+        <Route path="/subscribers"         element={<Subscribers />} />
+        <Route path="/subscribers/:id"     element={<SubscriberDetail />} />
+        <Route path="/debts"               element={<Debts />} />
+        <Route path="/payments"            element={<Payments />} />
+        <Route path="/reports"             element={<Reports />} />
+        <Route path="/sheets"              element={<Sheets />} />
+        <Route path="/accountants"         element={<Accountants />} />
+        <Route path="/settings"            element={<Settings />} />
+        <Route path="/subscribe"           element={<SubscribePlan />} />
+        <Route path="/subscribe/:plan"     element={<SubscribePlan />} />
+        <Route path="/pricing"             element={<SubscribePlan />} />
       </Route>
 
-      {/* ── Fallback redirects ── */}
+      {/* Catch-all */}
       <Route
         path="/"
         element={
-          !user         ? <Navigate to="/login"     replace /> :
-          isSuperAdmin  ? <Navigate to="/admin"     replace /> :
-          <Navigate to="/dashboard" replace />
+          !user        ? <Navigate to="/login"     replace /> :
+          isSuperAdmin ? <Navigate to="/admin"     replace /> :
+                         <Navigate to="/dashboard" replace />
         }
       />
       <Route
         path="*"
         element={
-          !user         ? <Navigate to="/login"     replace /> :
-          isSuperAdmin  ? <Navigate to="/admin"     replace /> :
-          <Navigate to="/dashboard" replace />
+          !user        ? <Navigate to="/login"     replace /> :
+          isSuperAdmin ? <Navigate to="/admin"     replace /> :
+                         <Navigate to="/dashboard" replace />
         }
       />
 
