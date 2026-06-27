@@ -6,9 +6,9 @@ import { toast } from '../components/Toast'
 
 const planNames = {
   trial:    '⭐ تجريبي',
-  starter:  '⚡ البداية ($5/شهر)',
-  pro:      '💎 الاحترافي ($12/شهر)',
-  business: '🏢 الأعمال ($25/شهر)'
+  starter:  '⚡ البداية ($15/شهر)',
+  pro:      '💎 الاحترافي ($25/شهر)',
+  business: '🏢 الأعمال ($35/شهر)'
 }
 
 const DEFAULT_WA = 'عزيزي {name}، لديك {months} شهر متأخر بمبلغ {amount} د.ع. نرجو السداد قبل نهاية الشهر. شكراً — {company}'
