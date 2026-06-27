@@ -25,7 +25,6 @@ export default function Settings() {
   const [subCount, setSubCount] = useState(0)
   const [payCount, setPayCount] = useState(0)
   const [totalRev, setTotalRev] = useState(0)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
   useEffect(() => {
     setDark(document.documentElement.hasAttribute('data-dark'))
@@ -40,16 +39,19 @@ export default function Settings() {
   }, [company])
 
   async function loadStats() {
-    const [{ count: sc }, { count: pc }, { data: rd }] = await Promise.all([
-      supabase.from('subscribers').select('*',{count:'exact',head:true})
-        .eq('company_id', company.id).eq('is_active', true),
-      supabase.from('payments').select('*',{count:'exact',head:true})
-        .eq('company_id', company.id),
-      supabase.from('payments').select('amount').eq('company_id', company.id)
-    ])
-    setSubCount(sc || 0)
-    setPayCount(pc || 0)
-    setTotalRev((rd||[]).reduce((a,p) => a + Number(p.amount), 0))
+    if (!company?.id) return
+    try {
+      const [{ count: sc }, { count: pc }, { data: rd }] = await Promise.all([
+        supabase.from('subscribers').select('*',{count:'exact',head:true})
+          .eq('company_id', company.id).eq('is_active', true),
+        supabase.from('payments').select('*',{count:'exact',head:true})
+          .eq('company_id', company.id),
+        supabase.from('payments').select('amount').eq('company_id', company.id)
+      ])
+      setSubCount(sc || 0)
+      setPayCount(pc || 0)
+      setTotalRev((rd||[]).reduce((a,p) => a + Number(p.amount), 0))
+    } catch (_) {}
   }
 
   async function saveCompany() {
@@ -130,7 +132,7 @@ export default function Settings() {
           </div>
           <span style={{marginRight:'auto',background:'rgba(255,255,255,.15)',
             borderRadius:20,padding:'3px 12px',fontSize:12,fontWeight:700,color:'#fff'}}>
-            {planNames[company?.plan]}
+            {planNames[company?.plan] || '⭐ تجريبي'}
           </span>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginTop:10}}>
@@ -142,8 +144,7 @@ export default function Settings() {
             <div key={label} style={{background:'rgba(255,255,255,.1)',
               borderRadius:10,padding:'8px 6px',textAlign:'center'}}>
               <div style={{fontSize:16}}>{icon}</div>
-              <div style={{fontSize:18,fontWeight:900,color:'#fff',
-                fontSize:'clamp(11px,3vw,18px)'}}>{val}</div>
+              <div style={{fontWeight:900,color:'#fff',fontSize:'clamp(11px,3vw,18px)'}}>{val}</div>
               <div style={{fontSize:10,color:'rgba(255,255,255,.6)',marginTop:1}}>{label}</div>
             </div>
           ))}
