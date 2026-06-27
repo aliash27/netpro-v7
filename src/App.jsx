@@ -3,7 +3,6 @@ import { AuthProvider, useAuth } from './context/AuthContext'
 import { Suspense, lazy } from 'react'
 import { ToastContainer } from './components/Toast'
 
-// ── Lazy page imports ──────────────────────────────────────────
 const Layout           = lazy(() => import('./components/Layout'))
 const Login            = lazy(() => import('./pages/Login'))
 const Dashboard        = lazy(() => import('./pages/Dashboard'))
@@ -18,7 +17,6 @@ const Accountants      = lazy(() => import('./pages/Accountants'))
 const SubscribePlan    = lazy(() => import('./pages/SubscribePlan'))
 const AdminDashboard   = lazy(() => import('./pages/admin/AdminDashboard'))
 
-// ── Loading screen ─────────────────────────────────────────────
 function FullPageLoader() {
   return (
     <div style={{
@@ -31,8 +29,8 @@ function FullPageLoader() {
       <div style={{ fontSize: 22, fontWeight: 800, color: '#fff' }}>نيت برو</div>
       <div style={{ fontSize: 13, color: '#64748b' }}>جاري التحميل...</div>
       <div style={{
-        width: 200, height: 3, background: '#1e293b',
-        borderRadius: 4, overflow: 'hidden',
+        width: 200, height: 3,
+        background: '#1e293b', borderRadius: 4, overflow: 'hidden',
       }}>
         <div style={{
           width: '55%', height: '100%',
@@ -44,14 +42,13 @@ function FullPageLoader() {
       <style>{`
         @keyframes npSlide {
           0%   { transform: translateX(-180%); }
-          100% { transform: translateX(420%);  }
+          100% { transform: translateX(420%); }
         }
       `}</style>
     </div>
   )
 }
 
-// ── Root ───────────────────────────────────────────────────────
 export default function App() {
   return (
     <BrowserRouter>
@@ -65,92 +62,64 @@ export default function App() {
   )
 }
 
-// ── Route tree ─────────────────────────────────────────────────
 function AppRoutes() {
   const { loading, user, isSuperAdmin } = useAuth()
 
-  // ── CRITICAL: never make a routing decision while auth is loading ──
-  // This single guard eliminates all false "no company" redirects.
   if (loading) return <FullPageLoader />
 
   return (
     <Routes>
 
       {/* Public */}
-      <Route
-        path="/login"
-        element={
-          !user
-            ? <Login />
-            : isSuperAdmin
-              ? <Navigate to="/admin" replace />
-              : <Navigate to="/dashboard" replace />
-        }
-      />
+      <Route path="/login" element={
+        !user        ? <Login /> :
+        isSuperAdmin ? <Navigate to="/admin"     replace /> :
+                       <Navigate to="/dashboard" replace />
+      } />
 
-      {/* ── Super-Admin panel ──────────────────────────────────
-          Guard: must be logged in AND isSuperAdmin must be true.
-          Any other logged-in user gets bounced to /dashboard.
-      ── */}
-      <Route
-        path="/admin"
-        element={
-          !user         ? <Navigate to="/login"     replace /> :
-          !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
-          <AdminDashboard />
-        }
-      />
-      <Route
-        path="/admin/*"
-        element={
-          !user         ? <Navigate to="/login"     replace /> :
-          !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
-          <AdminDashboard />
-        }
-      />
+      {/* Super-admin — never mounts Layout */}
+      <Route path="/admin" element={
+        !user         ? <Navigate to="/login"     replace /> :
+        !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
+        <AdminDashboard />
+      } />
+      <Route path="/admin/*" element={
+        !user         ? <Navigate to="/login"     replace /> :
+        !isSuperAdmin ? <Navigate to="/dashboard" replace /> :
+        <AdminDashboard />
+      } />
 
-      {/* ── Normal user routes ─────────────────────────────────
-          Guard: must be logged in AND must NOT be super-admin.
-          Super-admins are always redirected to /admin.
-      ── */}
-      <Route
-        element={
-          !user        ? <Navigate to="/login" replace /> :
-          isSuperAdmin ? <Navigate to="/admin" replace /> :
-          <Layout />
-        }
-      >
-        <Route path="/dashboard"           element={<Dashboard />} />
-        <Route path="/subscribers"         element={<Subscribers />} />
-        <Route path="/subscribers/:id"     element={<SubscriberDetail />} />
-        <Route path="/debts"               element={<Debts />} />
-        <Route path="/payments"            element={<Payments />} />
-        <Route path="/reports"             element={<Reports />} />
-        <Route path="/sheets"              element={<Sheets />} />
-        <Route path="/accountants"         element={<Accountants />} />
-        <Route path="/settings"            element={<Settings />} />
-        <Route path="/subscribe"           element={<SubscribePlan />} />
-        <Route path="/subscribe/:plan"     element={<SubscribePlan />} />
-        <Route path="/pricing"             element={<SubscribePlan />} />
+      {/* Regular users — isSuperAdmin check prevents Layout mounting */}
+      <Route element={
+        !user        ? <Navigate to="/login" replace /> :
+        isSuperAdmin ? <Navigate to="/admin" replace /> :
+        <Layout />
+      }>
+        <Route path="/dashboard"       element={<Dashboard />} />
+        <Route path="/subscribers"     element={<Subscribers />} />
+        <Route path="/subscribers/:id" element={<SubscriberDetail />} />
+        <Route path="/debts"           element={<Debts />} />
+        <Route path="/payments"        element={<Payments />} />
+        <Route path="/reports"         element={<Reports />} />
+        <Route path="/sheets"          element={<Sheets />} />
+        <Route path="/accountants"     element={<Accountants />} />
+        <Route path="/settings"        element={<Settings />} />
+        <Route path="/subscribe"       element={<SubscribePlan />} />
+        <Route path="/subscribe/:plan" element={<SubscribePlan />} />
+        <Route path="/pricing"         element={<SubscribePlan />} />
       </Route>
 
       {/* Catch-all */}
-      <Route
-        path="/"
-        element={
-          !user        ? <Navigate to="/login"     replace /> :
-          isSuperAdmin ? <Navigate to="/admin"     replace /> :
-                         <Navigate to="/dashboard" replace />
-        }
-      />
-      <Route
-        path="*"
-        element={
-          !user        ? <Navigate to="/login"     replace /> :
-          isSuperAdmin ? <Navigate to="/admin"     replace /> :
-                         <Navigate to="/dashboard" replace />
-        }
-      />
+      <Route path="/" element={
+        !user        ? <Navigate to="/login"     replace /> :
+        isSuperAdmin ? <Navigate to="/admin"     replace /> :
+                       <Navigate to="/dashboard" replace />
+      } />
+      <Route path="*" element={
+        !user        ? <Navigate to="/login"     replace /> :
+        isSuperAdmin ? <Navigate to="/admin"     replace /> :
+                       <Navigate to="/dashboard" replace />
+      } />
 
     </Routes>
   )
