@@ -15,7 +15,7 @@ const NAV = [
 ]
 
 export default function Layout() {
-  const { user, company, role, planExpired, signOut, isAdmin } = useAuth()
+  const { user, company, role, planExpired, signOut, isSuperAdmin } = useAuth()
   const navigate = useNavigate()
 
   const [sideOpen,    setSideOpen]    = useState(false)
@@ -27,10 +27,10 @@ export default function Layout() {
   const [gsConnected, setGsConnected] = useState(false)
   const notifRef = useRef(null)
 
-  useEffect(() => {
-    if (!user)   { navigate('/login', { replace: true }); return }
-    if (isAdmin) { navigate('/admin', { replace: true }); return }
-  }, [user, isAdmin, navigate])
+  // ── REMOVED the old useEffect that called navigate('/admin')
+  //    App.jsx now handles all routing — Layout must never redirect
+  //    because it runs AFTER the first render, causing flash states.
+  // ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!company) return
@@ -85,7 +85,7 @@ export default function Layout() {
       setGsConnected(true)
       const { data: subs } = await supabase
         .from('subscribers')
-        .select('name,phone,monthly_fee,start_date,last_paid_month,is_active')
+        .select('name, phone, monthly_fee, start_date, is_active')
         .eq('company_id', company.id)
         .order('name')
       await fetch(cfg.web_app_url, {
@@ -109,7 +109,10 @@ export default function Layout() {
     return () => clearInterval(t)
   }, [company])
 
-  if (!user || isAdmin) return null
+  // ── Guard: if somehow Layout renders for a super-admin,
+  //    return null immediately — do not render anything.
+  //    App.jsx should prevent this, but this is a safety net.
+  if (!user || isSuperAdmin) return null
 
   const planBadge = () => {
     if (!company) return null
@@ -119,9 +122,12 @@ export default function Layout() {
       pro:      { label: 'احترافي', color: '#8b5cf6' },
       business: { label: 'أعمال',   color: '#10b981' },
     }
-    const p = plans[company.plan] ?? { label: company.plan, color: '#6b7280' }
+    const p = plans[company.plan] ?? { label: company.plan ?? '—', color: '#6b7280' }
     return (
-      <span style={{ background: p.color + '22', color: p.color, borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600 }}>
+      <span style={{
+        background: p.color + '22', color: p.color,
+        borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600,
+      }}>
         {p.label}
       </span>
     )
@@ -134,7 +140,7 @@ export default function Layout() {
       display: 'flex', minHeight: '100vh',
       background: 'var(--bg, #f0f4ff)',
       color: 'var(--ink, #0a0f1e)',
-      fontFamily: "'Tajawal', system-ui, sans-serif"
+      fontFamily: "'Tajawal', system-ui, sans-serif",
     }}>
 
       {/* ── Sidebar ── */}
@@ -156,7 +162,7 @@ export default function Layout() {
               background: 'linear-gradient(135deg,#1a3fdb,#6144f5)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 20, flexShrink: 0,
-              boxShadow: '0 4px 14px rgba(26,63,219,.3)'
+              boxShadow: '0 4px 14px rgba(26,63,219,.3)',
             }}>📡</div>
             <div>
               <div style={{ fontWeight: 900, fontSize: 16, color: 'var(--ink)' }}>نيت برو</div>
@@ -165,13 +171,22 @@ export default function Layout() {
           </div>
 
           {company && (
-            <div style={{ marginTop: 12, background: 'var(--bg2)', borderRadius: 10, padding: '10px 12px' }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink)', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div style={{
+              marginTop: 12, background: 'var(--bg2)',
+              borderRadius: 10, padding: '10px 12px',
+            }}>
+              <div style={{
+                fontSize: 12, fontWeight: 700, color: 'var(--ink)', marginBottom: 4,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
                 🏢 {company.name}
               </div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {planBadge()}
-                <span style={{ background: 'var(--bdr)', color: 'var(--ink3)', borderRadius: 6, padding: '2px 8px', fontSize: 11 }}>
+                <span style={{
+                  background: 'var(--bdr)', color: 'var(--ink3)',
+                  borderRadius: 6, padding: '2px 8px', fontSize: 11,
+                }}>
                   {role === 'owner' ? 'مالك' : role === 'accountant' ? 'محاسب' : 'مراقب'}
                 </span>
               </div>
@@ -179,22 +194,25 @@ export default function Layout() {
           )}
         </div>
 
-        {/* تنبيه انتهاء الباقة */}
+        {/* Expired plan warning */}
         {planExpired && (
           <div style={{
-            margin: '10px 12px 0', background: 'rgba(225,29,72,.08)',
-            border: '1px solid rgba(225,29,72,.25)', borderRadius: 10,
-            padding: '10px 12px', fontSize: 12, color: 'var(--rose)', textAlign: 'center'
+            margin: '10px 12px 0',
+            background: 'rgba(225,29,72,.08)',
+            border: '1px solid rgba(225,29,72,.25)',
+            borderRadius: 10, padding: '10px 12px',
+            fontSize: 12, color: 'var(--rose)', textAlign: 'center',
           }}>
             ⚠️ انتهت صلاحية باقتك<br />
             <button onClick={() => navigate('/subscribe')} style={{
-              marginTop: 6, background: 'var(--rose)', color: '#fff', border: 'none',
-              borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 11, fontWeight: 700
+              marginTop: 6, background: 'var(--rose)', color: '#fff',
+              border: 'none', borderRadius: 6, padding: '4px 12px',
+              cursor: 'pointer', fontSize: 11, fontWeight: 700,
             }}>تجديد الاشتراك</button>
           </div>
         )}
 
-        {/* Nav */}
+        {/* Nav links */}
         <nav style={{ flex: 1, overflowY: 'auto', padding: '12px 10px' }}>
           {navLinks.map(n => (
             <NavLink key={n.to} to={n.to} onClick={() => setSideOpen(false)}
@@ -215,21 +233,22 @@ export default function Layout() {
               {n.to === '/debts' && debtCount > 0 && (
                 <span style={{
                   marginRight: 'auto', background: 'var(--rose)', color: '#fff',
-                  borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700
+                  borderRadius: 10, padding: '1px 7px', fontSize: 11, fontWeight: 700,
                 }}>{debtCount}</span>
               )}
             </NavLink>
           ))}
         </nav>
 
-        {/* تسجيل خروج */}
+        {/* Sign out */}
         <div style={{ padding: '12px 10px', borderTop: '1px solid var(--bdr)' }}>
-          <button onClick={() => { signOut(); navigate('/login') }}
+          <button
+            onClick={() => { signOut(); navigate('/login') }}
             style={{
               width: '100%', background: 'transparent', color: 'var(--ink3)',
               border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 14px',
               cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center',
-              gap: 8, fontWeight: 600, transition: 'all .2s', fontFamily: 'inherit'
+              gap: 8, fontWeight: 600, transition: 'all .2s', fontFamily: 'inherit',
             }}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(225,29,72,.08)'; e.currentTarget.style.color = 'var(--rose)' }}
             onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--ink3)' }}>
@@ -238,14 +257,19 @@ export default function Layout() {
         </div>
       </aside>
 
-      {/* Overlay موبايل */}
+      {/* Mobile overlay */}
       {sideOpen && (
-        <div onClick={() => setSideOpen(false)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 199 }} />
+        <div
+          onClick={() => setSideOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 199 }}
+        />
       )}
 
-      {/* ── Main ── */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginRight: 240, minWidth: 0 }} className="main-area">
+      {/* ── Main content area ── */}
+      <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column',
+        marginRight: 240, minWidth: 0,
+      }} className="main-area">
 
         {/* Topbar */}
         <header style={{
@@ -257,8 +281,9 @@ export default function Layout() {
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           boxShadow: 'var(--shC)',
         }}>
-          {/* Hamburger */}
-          <button onClick={() => setSideOpen(p => !p)} className="hamburger"
+          <button
+            onClick={() => setSideOpen(p => !p)}
+            className="hamburger"
             style={{ background: 'none', border: 'none', color: 'var(--ink3)', cursor: 'pointer', fontSize: 22, display: 'none' }}>
             ☰
           </button>
@@ -269,26 +294,30 @@ export default function Layout() {
               background: 'var(--sur)', border: '1px solid var(--bdr)', color: 'var(--ink3)',
               borderRadius: 10, padding: '7px 14px', cursor: syncing ? 'not-allowed' : 'pointer',
               fontSize: 13, display: 'flex', alignItems: 'center', gap: 6,
-              fontFamily: 'inherit', fontWeight: 600
+              fontFamily: 'inherit', fontWeight: 600,
             }}>
-            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>🔄</span>
+            <span style={{ display: 'inline-block', animation: syncing ? 'spin 1s linear infinite' : 'none' }}>
+              🔄
+            </span>
             {syncing ? 'جاري المزامنة...' : 'Sheets'}
           </button>
 
-          {/* Notif + user */}
+          {/* Notifications + user */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} ref={notifRef}>
             <div style={{ position: 'relative' }}>
               <button onClick={() => setNotifOpen(p => !p)} style={{
                 background: 'var(--sur)', border: '1px solid var(--bdr)', color: 'var(--ink3)',
                 borderRadius: 10, width: 38, height: 38, cursor: 'pointer', fontSize: 17,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative'
+                display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative',
               }}>
                 🔔
                 {unread > 0 && (
                   <span style={{
-                    position: 'absolute', top: -4, left: -4, background: 'var(--rose)',
-                    color: '#fff', borderRadius: '50%', width: 18, height: 18,
-                    fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    position: 'absolute', top: -4, left: -4,
+                    background: 'var(--rose)', color: '#fff',
+                    borderRadius: '50%', width: 18, height: 18,
+                    fontSize: 10, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>{unread > 9 ? '9+' : unread}</span>
                 )}
               </button>
@@ -296,29 +325,39 @@ export default function Layout() {
               {notifOpen && (
                 <div style={{
                   position: 'absolute', top: 44, left: 0, width: 300,
-                  background: 'var(--sur)', border: '1px solid var(--bdr)', borderRadius: 14,
-                  boxShadow: 'var(--shH)', zIndex: 200, overflow: 'hidden'
+                  background: 'var(--sur)', border: '1px solid var(--bdr)',
+                  borderRadius: 14, boxShadow: 'var(--shH)', zIndex: 200, overflow: 'hidden',
                 }}>
-                  <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--bdr)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{
+                    padding: '12px 16px', borderBottom: '1px solid var(--bdr)',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  }}>
                     <span style={{ fontWeight: 800, fontSize: 14, color: 'var(--ink)' }}>
                       الإشعارات {unread > 0 && `(${unread})`}
                     </span>
                     {unread > 0 && (
-                      <button onClick={markAllRead}
-                        style={{ background: 'none', border: 'none', color: 'var(--blue)', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>
+                      <button onClick={markAllRead} style={{
+                        background: 'none', border: 'none', color: 'var(--blue)',
+                        cursor: 'pointer', fontSize: 12, fontFamily: 'inherit',
+                      }}>
                         قراءة الكل
                       </button>
                     )}
                   </div>
                   <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                     {notifs.length === 0 ? (
-                      <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink3)', fontSize: 13 }}>لا توجد إشعارات</div>
+                      <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink3)', fontSize: 13 }}>
+                        لا توجد إشعارات
+                      </div>
                     ) : notifs.map(n => (
                       <div key={n.id} style={{
                         padding: '11px 16px', borderBottom: '1px solid var(--bdr2)',
                         background: n.is_read ? 'transparent' : 'rgba(26,63,219,.04)',
                       }}>
-                        <div style={{ fontSize: 13, fontWeight: n.is_read ? 500 : 700, color: 'var(--ink)', marginBottom: 2 }}>
+                        <div style={{
+                          fontSize: 13, fontWeight: n.is_read ? 500 : 700,
+                          color: 'var(--ink)', marginBottom: 2,
+                        }}>
                           {notifIcon(n.type)} {n.title}
                         </div>
                         {n.body && <div style={{ fontSize: 12, color: 'var(--ink3)' }}>{n.body}</div>}
@@ -335,43 +374,55 @@ export default function Layout() {
             <div style={{
               display: 'flex', alignItems: 'center', gap: 8,
               background: 'var(--sur)', border: '1px solid var(--bdr)',
-              borderRadius: 10, padding: '5px 12px'
+              borderRadius: 10, padding: '5px 12px',
             }}>
               <div style={{
                 width: 28, height: 28, borderRadius: '50%',
                 background: 'linear-gradient(135deg,#1a3fdb,#6144f5)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: '#fff', fontSize: 13, fontWeight: 900
+                color: '#fff', fontSize: 13, fontWeight: 900,
               }}>
                 {user?.email?.[0]?.toUpperCase() ?? 'U'}
               </div>
-              <span style={{ fontSize: 12, color: 'var(--ink3)', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{
+                fontSize: 12, color: 'var(--ink3)',
+                maxWidth: 130, overflow: 'hidden',
+                textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
                 {user?.email}
               </span>
             </div>
           </div>
         </header>
 
-        {/* Content */}
-        <main style={{ flex: 1, overflowY: 'auto' }}>
-          {planExpired && (
-            <div style={{
-              background: 'rgba(225,29,72,.06)', border: '1px solid rgba(225,29,72,.2)',
-              borderRadius: 14, padding: '14px 20px', margin: '16px 20px 0',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10
-            }}>
-              <div>
-                <div style={{ fontWeight: 700, color: 'var(--rose)', fontSize: 14 }}>⚠️ انتهت صلاحية اشتراكك</div>
-                <div style={{ color: 'var(--ink3)', fontSize: 12, marginTop: 2 }}>جدّد اشتراكك للاستمرار بدون انقطاع.</div>
+        {/* Expired plan banner */}
+        {planExpired && (
+          <div style={{
+            background: 'rgba(225,29,72,.06)', border: '1px solid rgba(225,29,72,.2)',
+            borderRadius: 14, padding: '14px 20px', margin: '16px 20px 0',
+            display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+          }}>
+            <div>
+              <div style={{ fontWeight: 700, color: 'var(--rose)', fontSize: 14 }}>
+                ⚠️ انتهت صلاحية اشتراكك
               </div>
-              <button onClick={() => navigate('/subscribe')} style={{
-                background: 'var(--rose)', color: '#fff', border: 'none',
-                borderRadius: 10, padding: '9px 18px', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'inherit'
-              }}>تجديد الاشتراك</button>
+              <div style={{ color: 'var(--ink3)', fontSize: 12, marginTop: 2 }}>
+                جدّد اشتراكك للاستمرار بدون انقطاع.
+              </div>
             </div>
-          )}
+            <button onClick={() => navigate('/subscribe')} style={{
+              background: 'var(--rose)', color: '#fff', border: 'none',
+              borderRadius: 10, padding: '9px 18px', cursor: 'pointer',
+              fontWeight: 700, fontSize: 13, fontFamily: 'inherit',
+            }}>
+              تجديد الاشتراك
+            </button>
+          </div>
+        )}
 
-          {/* context يمرر setDebtCount و debtCount و setGsConnected للصفحات */}
+        {/* Page content */}
+        <main style={{ flex: 1, overflowY: 'auto' }}>
           <Outlet context={{ setDebtCount, debtCount, gsConnected, setGsConnected }} />
         </main>
       </div>
