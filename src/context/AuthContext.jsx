@@ -13,14 +13,18 @@ export function AuthProvider({ children }) {
   const [loading,      setLoading]      = useState(true)
   const [planExpired,  setPlanExpired]  = useState(false)
 
-  // ── Core identity loader ───────────────────────────────────
-  const loadCompany = useCallback(async (authUser) => {
-    // Reset all identity state before every load
+  // ── Reset all identity state ───────────────────────────────
+  function resetState() {
     setCompany(null)
     setAccountant(null)
     setRole(null)
     setIsSuperAdmin(false)
     setPlanExpired(false)
+  }
+
+  // ── Core loader ────────────────────────────────────────────
+  const loadCompany = useCallback(async (authUser) => {
+    resetState()
 
     if (!authUser?.id) {
       setLoading(false)
@@ -28,79 +32,61 @@ export function AuthProvider({ children }) {
     }
 
     try {
-      // ── Step 1: Try owner lookup ─────────────────────────
-      const { data: ownRow, error: ownerErr } = await supabase
+      // ── Attempt 1: lookup by owner_id ──────────────────────
+      const { data: row1, error: err1 } = await supabase
         .from('companies')
         .select('*')
         .eq('owner_id', authUser.id)
         .maybeSingle()
 
-      // Log but don't throw — RLS violations return an error here
-      // when the user has no row, not just null
-      if (ownerErr) {
-        console.warn('[Auth] owner lookup:', ownerErr.code, ownerErr.message)
+      if (err1) {
+        // Log the code so we can diagnose RLS issues in console
+        console.warn('[Auth] owner_id lookup failed:', err1.code, err1.message)
       }
 
-      if (ownRow) {
-        const superAdmin = ownRow.is_super_admin === true || ownRow.is_admin === true
-        setCompany(ownRow)
-        setIsSuperAdmin(superAdmin)
-        setRole(superAdmin ? 'admin' : 'owner')
-        setAccountant(null)
-        if (!superAdmin) evaluateExpiry(ownRow)
+      if (row1) {
+        applyCompanyRow(row1)
         setLoading(false)
         return
       }
 
-      // ── Step 2: No owner row found.
-      //    Before concluding "no account", check if this auth user
-      //    is a super-admin by email as a last resort.
-      //    This handles the edge case where RLS blocked the SELECT
-      //    but the user IS the admin.
-      // ────────────────────────────────────────────────────────
-      // We do a second attempt using the user's email directly.
-      // This only works if the companies.email column matches.
-      const { data: emailRow, error: emailErr } = await supabase
+      // ── Attempt 2: lookup by email ─────────────────────────
+      // Handles the case where owner_id was nulled (ON DELETE SET NULL)
+      // or the trigger didn't fire yet
+      const { data: row2, error: err2 } = await supabase
         .from('companies')
         .select('*')
         .eq('email', authUser.email)
         .maybeSingle()
 
-      if (emailErr) {
-        console.warn('[Auth] email lookup:', emailErr.code, emailErr.message)
+      if (err2) {
+        console.warn('[Auth] email lookup failed:', err2.code, err2.message)
       }
 
-      if (emailRow) {
-        const superAdmin = emailRow.is_super_admin === true || emailRow.is_admin === true
-
-        // If owner_id was null (SET NULL on delete), fix it silently
-        if (!emailRow.owner_id) {
+      if (row2) {
+        // Silently repair owner_id if it's missing
+        if (!row2.owner_id) {
           supabase
             .from('companies')
             .update({ owner_id: authUser.id })
-            .eq('id', emailRow.id)
-            .then(() => console.log('[Auth] Patched owner_id for', authUser.email))
+            .eq('id', row2.id)
+            .then(() => {})
         }
-
-        setCompany(emailRow)
-        setIsSuperAdmin(superAdmin)
-        setRole(superAdmin ? 'admin' : 'owner')
-        setAccountant(null)
-        if (!superAdmin) evaluateExpiry(emailRow)
+        applyCompanyRow(row2)
         setLoading(false)
         return
       }
 
-      // ── Step 3: Try sub-accountant lookup ───────────────
-      const { data: subRow, error: subErr } = await supabase
+      // ── Attempt 3: sub-accountant ──────────────────────────
+      const { data: subRow, error: err3 } = await supabase
         .from('sub_accountants')
         .select('*, companies(*)')
         .eq('auth_user_id', authUser.id)
         .eq('is_active', true)
         .maybeSingle()
 
-      if (subErr) {
-        console.warn('[Auth] sub-accountant lookup:', subErr.code, subErr.message)
+      if (err3) {
+        console.warn('[Auth] sub_accountant lookup failed:', err3.code, err3.message)
       }
 
       if (subRow?.companies) {
@@ -108,40 +94,43 @@ export function AuthProvider({ children }) {
         setAccountant(subRow)
         setIsSuperAdmin(false)
         setRole(subRow.role === 'viewer' ? 'viewer' : 'accountant')
-        evaluateExpiry(subRow.companies)
+        evaluateExpiry(subRow.companies, false)
         setLoading(false)
         return
       }
 
-      // ── Step 4: Authenticated but genuinely no company row ──
-      // Could be a brand-new signup where the trigger hasn't fired,
-      // or a deleted company. Show the empty state.
-      console.warn('[Auth] No company found for', authUser.email, authUser.id)
+      // ── No record found — genuine new/deleted user ─────────
+      console.warn('[Auth] no company record for', authUser.email)
       setLoading(false)
 
     } catch (err) {
-      // Catch unexpected errors (network issues, etc.)
-      console.error('[Auth] loadCompany crashed:', err.message)
+      console.error('[Auth] loadCompany error:', err.message)
       setLoading(false)
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Plan expiry (never applies to super-admins) ────────────
-  function evaluateExpiry(comp) {
-    if (!comp) { setPlanExpired(false); return }
-    const expiry = comp.trial_end
-      ? new Date(comp.trial_end)
-      : comp.plan_end_date
-        ? new Date(comp.plan_end_date)
-        : null
-    setPlanExpired(expiry ? expiry < new Date() : false)
+  // ── Apply a companies row to state ─────────────────────────
+  function applyCompanyRow(row) {
+    const superAdmin = row.is_super_admin === true || row.is_admin === true
+    setCompany(row)
+    setIsSuperAdmin(superAdmin)
+    setRole(superAdmin ? 'admin' : 'owner')
+    setAccountant(null)
+    evaluateExpiry(row, superAdmin)
+  }
+
+  // ── Plan expiry — super-admins never expire ────────────────
+  function evaluateExpiry(comp, superAdmin) {
+    if (!comp || superAdmin) { setPlanExpired(false); return }
+    const expiryStr = comp.trial_end || comp.plan_end_date || null
+    if (!expiryStr) { setPlanExpired(false); return }
+    setPlanExpired(new Date(expiryStr) < new Date())
   }
 
   // ── Auth listener ──────────────────────────────────────────
   useEffect(() => {
     let mounted = true
 
-    // Restore session on mount / page refresh
     supabase.auth.getSession().then(({ data: { session }, error }) => {
       if (!mounted) return
       if (error) console.error('[Auth] getSession:', error.message)
@@ -150,23 +139,16 @@ export function AuthProvider({ children }) {
       loadCompany(u)
     })
 
-    // React to sign-in, sign-out, token refresh
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         if (!mounted) return
         const u = session?.user ?? null
         setUser(u)
-
         if (!u) {
-          setCompany(null)
-          setAccountant(null)
-          setRole(null)
-          setIsSuperAdmin(false)
-          setPlanExpired(false)
+          resetState()
           setLoading(false)
           return
         }
-
         loadCompany(u)
       }
     )
@@ -195,13 +177,8 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
-    // Clear state immediately so UI reacts before the network call
+    resetState()
     setUser(null)
-    setCompany(null)
-    setAccountant(null)
-    setRole(null)
-    setIsSuperAdmin(false)
-    setPlanExpired(false)
     await supabase.auth.signOut()
   }
 
@@ -232,7 +209,7 @@ export function AuthProvider({ children }) {
   })()
 
   const isTrialActive = company?.plan === 'trial' && trialDaysLeft > 0
-  const isAdmin       = isSuperAdmin        // backward-compat alias
+  const isAdmin       = isSuperAdmin   // backward-compat alias used by Layout & pages
   const isOwner       = role === 'owner'
   const isViewer      = role === 'viewer'
   const canWrite      = role === 'owner' || role === 'accountant' || isSuperAdmin
@@ -240,20 +217,27 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider value={{
+      // State
       user,
       company,
       accountant,
       role,
       loading,
       planExpired,
+
+      // Role flags
       isSuperAdmin,
-      isAdmin,
+      isAdmin,      // alias — Layout.jsx, Dashboard.jsx, etc. import this
       isOwner,
       isViewer,
       canWrite,
       canDelete,
+
+      // Plan helpers
       trialDaysLeft,
       isTrialActive,
+
+      // Actions
       signIn,
       signUp,
       signOut,
